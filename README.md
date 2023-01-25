@@ -10,6 +10,8 @@ We have largely used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE
 
 To get started with the codes, you will need to first `train` a model and then evaluate it by either `speech analysis-resynthesis` or `speech enhancement`. To know different directories and main functions in this repository, please consult the following.
 
+**Note:** You should download a [pretrained lipreading model](https://github.com/mpc001/Lipreading_using_Temporal_Convolutional_Networks#model-zoo) for visual feature extraction, and put it in `./lipreading/data`
+
 ### Training
 
 Assuming that you have already cloned this repository and are in the `av-dkf` directory:
