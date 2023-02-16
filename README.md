@@ -11,7 +11,7 @@ We have largely used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE
   - [Getting started](#getting-started)
   - [Training](#training)
   - [Pretrained models](#pretrained-models)
-  - [Evaluation](#vvaluation)
+  - [Evaluation](#evaluation)
   - [Speech enhancement demo](#speech-enhancement-demo)
   - [Streamlit application](#streamlit-application)
   - [Useful resources](#useful-resources)
