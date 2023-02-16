@@ -2,7 +2,7 @@
 
 This repository contains the codes for the audio-visual speech enhancement (AVSE) framework based on Deep Kalman Filter (DKF), which is proposed in the following paper:
 
-> [1] A. Golmakani, M. Sadeghi, and R. Serizel, [Audio-visual Speech Enhancement with a Deep Kalman Filter Generative Model](https://arxiv.org/abs/2211.00988), October 2022.
+> [1] A. Golmakani, M. Sadeghi, and R. Serizel, [Audio-visual Speech Enhancement with a Deep Kalman Filter Generative Model](https://arxiv.org/abs/2211.00988), in IEEE International Conference on Acoustics Speech and Signal Processing (ICASSP), June 2023.
 
 We have largely used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to write these codes.
 
