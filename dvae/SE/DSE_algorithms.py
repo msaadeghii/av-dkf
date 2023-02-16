@@ -16,7 +16,6 @@ import numpy as np
 import librosa
 import soundfile as sf
 from iter  import concat_iter
-from eval_metrics import EvalMetrics
 from abc import ABC, abstractmethod
 
 

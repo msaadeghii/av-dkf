@@ -35,9 +35,7 @@ from torch import optim
 import time
 from torch.autograd.functional import jacobian
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
 import librosa
-from eval_metrics import EvalMetrics
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import os
@@ -740,8 +738,8 @@ class DPEEM(DEM):
             v_ = context
         else:
             v_ = self.Vf
-
-        Vs_t= self.vae.generation_x(Z.permute(-1,1,0), v_.unsqueeze(0).permute(0,1,-1)).permute(-1,1,0) # (F, 1 ,N)
+        
+        Vs_t= self.vae.generation_x(Z.permute(-1,1,0), v_.unsqueeze(0).permute(-1, 0, 1)).permute(-1,1,0) # (F, 1 ,N)
 
         self.Vs = self.tensor2np(Vs_t.detach())
 
@@ -767,7 +765,7 @@ class DPEEM(DEM):
             # compute prior params
             z_0 = torch.zeros(self.z_dim,1,1).to(self.device)
             z_tm1 = torch.cat([z_0, self.Z_t[:,:,:-1]], -1) # (L,1,F)
-            _, z_mean_p, z_logvar_p = self.vae.generation_z(z_tm1.permute(-1,1,0), self.Vf.unsqueeze(0).permute(0,1,-1))
+            _, z_mean_p, z_logvar_p = self.vae.generation_z(z_tm1.permute(-1,1,0), self.Vf.unsqueeze(0).permute(-1, 0, 1))
             z_mean_p = z_mean_p.permute(-1,1,0)
             z_logvar_p = z_logvar_p.permute(-1,1,0)
             # compute loss, do backward and update latent variables
@@ -1100,7 +1098,6 @@ class GDPEEM(DEM):
         else:
             v_ = self.Vf
 
-        # Vs_t= self.vae.generation_x(Z.permute(-1,1,0), self.vae.tcn_decoder(v_.unsqueeze(0).permute(0,-1,1)), vmask = True).permute(-1,1,0) # (F, 1 ,N)
         Vs_t= self.vae.generation_x(Z.permute(-1,1,0), self.visual).permute(-1,1,0) # (F, 1 ,N)
 
         self.Vs_t = Vs_t.clone().detach()

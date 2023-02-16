@@ -62,7 +62,7 @@ class SpeechDatasetFrames(data.Dataset):
 
     This is a quick speech sequence data loader which allow multiple workers
     """
-    def __init__(self, file_list, STFT_dict, shuffle, sequence_len = 'NaN', name='WSJ0', trim=True, extract_visual_features=True, vf_root = None):
+    def __init__(self, file_list, STFT_dict, shuffle, sequence_len = 'NaN', name='WSJ0', trim=True, extract_visual_features=False, vf_root = None):
 
         super().__init__()
 
@@ -158,38 +158,35 @@ class SpeechDatasetFrames(data.Dataset):
 
             # Data Video
             path, fname = os.path.split(wavfile)
-            if not self.extract_visual_features:
+            
+            videofile = os.path.join(path, fname[:-4]+'Raw.npy')
 
-                videofile = os.path.join(path, fname[:-4]+'Raw.npy')
+            v_orig = np.load(videofile)
+            N_vframes = v_orig.shape[1]
+            N_aframes = X.shape[1]
 
-                v_orig = np.load(videofile)
-                N_vframes = v_orig.shape[1]
-                N_aframes = X.shape[1]
+            #%% Video resampling
 
-                #%% Video resampling
-
-                if self.trim:
-                    t1, t2 = index/self.STFT_dict["fs"]
-                else:
-                    t1 = 0
-                    t2 = T_orig
-
-                T_orig = len(x_orig)/self.STFT_dict["fs"]
-                fps = 30
-
-                v1, v2 = int(np.floor(t1*fps)), int(np.floor((T_orig-t2)*fps))
-
-                v_trimmed = v_orig[:,v1:N_vframes-v2]
-
-                N_aframes = X.shape[1]
-
-                v_up = resample(v_trimmed, target_num = N_aframes)
-
-
-                self.data_v = v_up # shape (F, N)
+            if self.trim:
+                t1, t2 = index/self.STFT_dict["fs"]
             else:
-                this_idx = random.randint(0,74)
-                self.data_v = np.load(os.path.join(self.vf_root, f"aug{this_idx}", path[-10:].replace("/",'_')+fname[:-4]+"VF.npy")).transpose()
+                t1 = 0
+                t2 = T_orig
+
+            T_orig = len(x_orig)/self.STFT_dict["fs"]
+            fps = 30
+
+            v1, v2 = int(np.floor(t1*fps)), int(np.floor((T_orig-t2)*fps))
+
+            v_trimmed = v_orig[:,v1:N_vframes-v2]
+
+            N_aframes = X.shape[1]
+
+            v_up = resample(v_trimmed, target_num = N_aframes)
+
+
+            self.data_v = v_up # shape (F, N)
+
 
             self.current_frame = 0
             self.tot_num_frame = self.data_a.shape[1]
@@ -208,121 +205,13 @@ class SpeechDatasetFrames(data.Dataset):
 
         return frame_a, frame_v
 
-class SpeechSequencesRandom(data.Dataset):
-    """
-    Customize a dataset of speech sequences for Pytorch
-    at least the three following functions should be defined.
-
-    This is a quick speech sequence data loader which allow multiple workers
-    """
-    def __init__(self, file_list, sequence_len, STFT_dict, shuffle, name='WSJ0'):
-
-        super().__init__()
-
-        # STFT parameters
-        self.fs = STFT_dict['fs']
-        self.nfft = STFT_dict['nfft']
-        self.hop = STFT_dict['hop']
-        self.wlen = STFT_dict['wlen']
-        self.win = STFT_dict['win']
-        self.trim = STFT_dict['trim']
-
-        # data parameters
-        self.file_list = file_list
-        self.sequence_len = sequence_len
-        self.name = name
-        self.shuffle = shuffle
-
-        self.compute_len()
-
-
-    def compute_len(self):
-
-        self.valid_file_list = []
-
-        for wavfile in self.file_list:
-
-            x, fs_x = sf.read(wavfile)
-            if self.fs != fs_x:
-                raise ValueError('Unexpected sampling rate')
-
-            # Silence clipping
-            if self.trim:
-                x, idx = librosa.effects.trim(x, top_db=30)
-
-            # Check valid wav files
-            seq_length = (self.sequence_len - 1) * self.hop
-            if len(x) >= seq_length:
-                self.valid_file_list.append(wavfile)
-
-        if self.shuffle:
-            random.shuffle(self.valid_file_list)
-
-
-    def __len__(self):
-        """
-        arguments should not be modified
-        Return the total number of samples
-        """
-        return len(self.valid_file_list)
-
-
-    def __getitem__(self, index):
-        """
-        input arguments should not be modified
-        torch data loader will use this function to read ONE sample of data from a list that can be indexed by
-        parameter 'index'
-        """
-
-        # Read wav files
-        wavfile = self.valid_file_list[index]
-        x, fs_x = sf.read(wavfile)
-
-        # Silence clipping
-        if self.trim and ('TIMIT' in self.name):
-            path, file_name = os.path.split(wavfile)
-            path, speaker = os.path.split(path)
-            path, dialect = os.path.split(path)
-            path, set_type = os.path.split(path)
-            with open(os.path.join(path, set_type, dialect, speaker, file_name[:-4] + '.PHN'), 'r') as f:
-                first_line = f.readline() # Read the first line
-                for last_line in f: # Loop through the whole file reading it all
-                    pass
-            if not('#' in first_line) or not('#' in last_line):
-                raise NameError('The first of last lines of the .phn file should contain #')
-            ind_beg = int(first_line.split(' ')[1])
-            ind_end = int(last_line.split(' ')[0])
-            x = x[ind_beg:ind_end]
-        elif self.trim:
-            x, _ = librosa.effects.trim(x, top_db=30)
-
-        # Sequence tailor
-        file_length = len(x)
-        seq_length = (self.sequence_len - 1) * self.hop # sequence length in time domain
-        start = np.random.randint(0, file_length - seq_length)
-        end = start + seq_length
-        x = x[start:end]
-
-        # Normalize sequence
-        x = x/np.max(np.abs(x))
-
-        # STFT transformation
-        audio_spec = torch.stft(torch.from_numpy(x), n_fft=self.nfft, hop_length=self.hop,
-                                win_length=self.wlen, window=self.win,
-                                center=True, pad_mode='reflect', normalized=False, onesided=True)
-
-        # Square of magnitude
-        sample = (audio_spec[:,:,0]**2 + audio_spec[:,:,1]**2).float()
-
-        return sample
-
 
 class SpeechSequencesFull(data.Dataset):
     """
     Customize a dataset of speech sequences for Pytorch
     at least the three following functions should be defined.
     """
-    def __init__(self, file_list, sequence_len, overlap, STFT_dict, shuffle, name='WSJ0', extract_visual_features=True, gaussian = 0, vf_root = None):
+    def __init__(self, file_list, sequence_len, overlap, STFT_dict, shuffle, name='WSJ0', extract_visual_features=False, gaussian = 0, vf_root = None):
 
         super().__init__()
 
@@ -434,196 +323,33 @@ class SpeechSequencesFull(data.Dataset):
         sample_a = data_a[...,seq_start:seq_end]
         # Read video file
         path, fname = os.path.split(wavfile)
-        if self.extract_visual_features:
-            # self.data_v = np.load(os.path.join(os.path.join(self.vf_root, "../vf"), path[-10:].replace("/",'_')+fname[:-4]+"VF.npy")).transpose()
-            this_idx = random.randint(0,2)
-            self.data_v = np.load(os.path.join(self.vf_root, f"aug{this_idx}", path[-10:].replace("/",'_')+fname[:-4]+"VF.npy"))
-            self.data_v = self.data_v.transpose()
 
+        videofile = os.path.join(path, fname[:-4]+'RawVF.npy') # (512, N_frames)
+        v_orig = np.load(videofile)
 
-        else:
-            videofile = os.path.join(path, fname[:-4]+'Raw.npy')
-            v_orig = np.load(videofile)
+        N_vframes = v_orig.shape[1]
+        N_aframes = data_a.shape[1]
 
-
-            N_vframes = v_orig.shape[1]
-            N_aframes = data_a.shape[1]
-
-            #%% Video resampling
-            T_orig = len(x_orig)/self.STFT_dict["fs"]
-            if self.trim:
-                    t1, t2 = index_trim/self.STFT_dict["fs"]
-            else:
-                t1 = 0
-                t2 = T_orig
-
-            fps = 30
-
-            v1, v2 = int(np.floor(t1*fps)), int(np.floor((T_orig-t2)*fps))
-
-            v_trimmed = v_orig[:,v1:N_vframes-v2]
-
-            data_v = resample(v_trimmed, target_num = N_aframes)
-            self.data_v = data_v.transpose().reshape((-1,1,67,67,1)).transpose([0,1,3,2,4])
-
-
-
-        if not self.extract_visual_features:
-
-            seed = np.random.randint(2147483647)
-            all_frames = []
-            for it2 in range(self.data_v.shape[0]):
-                random.seed(seed) # apply this seed to img tranfsorms
-                torch.manual_seed(seed)
-                frame1_a = self.preprocess(Image.fromarray(np.uint8(self.data_v[it2,0,:,:,0]*255), 'L'))
-                all_frames.append(frame1_a)
-
-            data_aug = torch.stack(all_frames)
-            sample_v = data_aug.permute(1,0,2,3)
-
-
-            sample_v = sample_v[:,seq_start:seq_end,...]
-        else:
-            sample_v = self.data_v
-
-            sample_v = sample_v[:,seq_start:seq_end]
-
-        return sample_a, sample_v
-
-class SpeechSequencesFull2(data.Dataset):
-    """
-    Customize a dataset of speech sequences for Pytorch
-    at least the three following functions should be defined.
-    """
-    def __init__(self, file_list, sequence_len, overlap, STFT_dict, shuffle, name='WSJ0', extract_visual_features=True):
-
-        super().__init__()
-
-        # STFT parameters
-        self.fs = STFT_dict['fs']
-        self.nfft = STFT_dict['nfft']
-        self.hop = STFT_dict['hop']
-        self.wlen = STFT_dict['wlen']
-        self.win = STFT_dict['win']
-        self.trim = STFT_dict['trim']
-
-        # data parameters
-        self.file_list = file_list
-        self.sequence_len = sequence_len
-        self.name = name
-        self.shuffle = shuffle
-        self.overlap = overlap
-        self.extract_visual_features = extract_visual_features
-        self.compute_len()
-
-
-    def compute_len(self):
-
-        self.valid_seq_list = []
-
-        for wavfile in self.file_list:
-
-            x, fs_x = sf.read(wavfile)
-            if self.fs != fs_x:
-                raise ValueError('Unexpected sampling rate')
-
-            # remove beginning and ending silence
-            if self.trim:
-                x_t, (ind_beg, ind_end) = librosa.effects.trim(x, top_db=30)
-            x = np.pad(x_t, int(self.nfft // 2), mode='reflect')
-            # (cf. librosa.core.stft)
-            X = librosa.stft(x, n_fft=self.nfft, hop_length=self.hop,
-                             win_length=self.wlen,
-                             window=self.win) # STFT
-            # Check valid wav files
-
-            file_length = X.shape[1]
-            n_seq = int(((int(file_length - self.sequence_len)) // self.sequence_len)//self.overlap)
-            for i in range(n_seq):
-                seq_start = int(i * self.sequence_len*self.overlap)
-                seq_end = int(i * self.sequence_len*self.overlap) + self.sequence_len
-                seq_info = (wavfile, seq_start, seq_end)
-                self.valid_seq_list.append(seq_info)
-
-
-        if self.shuffle:
-            random.shuffle(self.valid_seq_list)
-
-
-    def __len__(self):
-        """
-        arguments should not be modified
-        Return the total number of samples
-        """
-        return len(self.valid_seq_list)
-
-
-    def __getitem__(self, index):
-        """
-        input arguments should not be modified
-        torch data loader will use this function to read ONE sample of data from a list that can be indexed by
-        parameter 'index'
-        """
-
-        # Read wav files
-        wavfile, seq_start, seq_end = self.valid_seq_list[index]
-        x_orig, fs_x = sf.read(wavfile)
-
+        #%% Video resampling
+        T_orig = len(x_orig)/self.STFT_dict["fs"]
         if self.trim:
-            x, (ind_beg, ind_end) = librosa.effects.trim(x_orig, top_db=30)
-        x = np.pad(x, int(self.nfft // 2), mode='reflect')
-        # Sequence tailor
-        # x = x_orig[seq_start:seq_end]
-
-        # Normalize sequence
-        x = x/np.max(np.abs(x))
-
-        # STFT transformation
-        audio_spec = torch.stft(torch.from_numpy(x), n_fft=self.nfft, hop_length=self.hop,
-                                win_length=self.wlen, window=torch.from_numpy(self.win),
-                                center=True, pad_mode='reflect', normalized=False, onesided=True, return_complex = False)
-
-
-        # Square of magnitude
-        sample_a = (audio_spec[:,:,0]**2 + audio_spec[:,:,1]**2).float()
-        sample_a = sample_a[...,seq_start:seq_end]
-        # Read video file
-        path, fname = os.path.split(wavfile)
-        if self.extract_visual_features:
-            self.data_v = np.load(os.path.join("vf", path[-10:].replace("/",'_')+fname[:-4]+"VF.npy")).transpose()
-            # print("cool")
-            # print(self.data_v.shape)
-            # mozz
+                t1, t2 = index_trim/self.STFT_dict["fs"]
         else:
-            videofile = os.path.join(path, fname[:-4]+'Raw.npy')
-            v_orig = np.load(videofile)
-            v_orig = v_orig[...,seq_start:seq_end]
+            t1 = 0
+            t2 = T_orig
 
-            N_vframes = v_orig.shape[1]
-            N_aframes = sample_a.shape[1]
+        fps = 30
 
-            #%% Video resampling
+        v1, v2 = int(np.floor(t1*fps)), int(np.floor((T_orig-t2)*fps))
 
-            t1, t2 = index_/self.fs
-            T_orig = len(x_orig)/self.fs
-            fps = 30
+        v_trimmed = v_orig[:,v1:N_vframes-v2]
 
-            v1, v2 = int(np.floor(t1*fps)), int(np.floor((T_orig-t2)*fps))
+        data_v = resample(v_trimmed, target_num = N_aframes).T
 
-            v_trimmed = v_orig[:,v1:N_vframes-v2]
-
-            self.data_v = resample(v_trimmed, target_num = N_aframes)
-
-
-        if not self.extract_visual_features:
-            sample_v = self.data_v.reshape([67,67, 1, self.sequence_len])
-        else:
-            sample_v = self.data_v
-
+        sample_v = data_v.T
         sample_v = sample_v[...,seq_start:seq_end]
 
         return sample_a, sample_v
-
 
 
 class SpeechDatasetSequences(data.Dataset):
@@ -632,7 +358,7 @@ class SpeechDatasetSequences(data.Dataset):
     dataloarder, at least the three following functions should be defined.
     """
 
-    def __init__(self, file_list, sequence_len, overlap, STFT_dict, shuffle, name='WSJ0', extract_visual_features=True):
+    def __init__(self, file_list, sequence_len, overlap, STFT_dict, shuffle, name='WSJ0', extract_visual_features=False):
 
         super().__init__()
 
@@ -658,8 +384,10 @@ class SpeechDatasetSequences(data.Dataset):
         self.overlap = int(overlap*sequence_len)
         self.compute_len()
         self.is_extract_visual_features = extract_visual_features
-        if extract_visual_features and 0:
-            config_path = "/home/agolmakani/workarea/av-dvae/lrw_resnet18_mstcn.json"
+
+
+        if extract_visual_features:
+            config_path = "./lipreading/data/lrw_resnet18_mstcn.json"
             args_loaded = load_json(config_path)
             backbone_type = args_loaded['backbone_type']
             width_mult = args_loaded['width_mult']
@@ -678,7 +406,7 @@ class SpeechDatasetSequences(data.Dataset):
                                 relu_type=relu_type,
                                 width_mult=width_mult,
                                 extract_feats=True).cuda()
-            self.vfeats = load_model("/home/agolmakani/workarea/av-dvae/lrw_resnet18_mstcn_adamw_s3.pth.tar", self.vfeats, allow_size_mismatch=False)
+            self.vfeats = load_model("./lipreading/data/lrw_resnet18_mstcn_adamw_s3.pth.tar", self.vfeats, allow_size_mismatch=False)
             self.vfeats.eval()
             self.extract_visual_features()
 
@@ -714,46 +442,26 @@ class SpeechDatasetSequences(data.Dataset):
 
     def extract_visual_features(self):
         for wavfile in tqdm(self.file_list):
-            x, fs_x = sf.read(wavfile)
-            if self.fs != fs_x:
-                raise ValueError('Unexpected sampling rate')
-            x_orig = x/np.max(np.abs(x))
 
-            # remove beginning and ending silence
-            x, index_ = librosa.effects.trim(x_orig, top_db=30)
-
-            x = np.pad(x, int(self.nfft // 2), mode='reflect')
-            # (cf. librosa.core.stft)
-            X = librosa.stft(x, n_fft=self.nfft, hop_length=self.hop,
-                             win_length=self.wlen,
-                             window=self.win) # STFT
-
-            data_a = np.abs(X)**2
             path, fname = os.path.split(wavfile)
             videofile = os.path.join(path, fname[:-4]+'Raw.npy')
             v_orig = np.load(videofile)
 
-
-            N_vframes = v_orig.shape[1]
-            N_aframes = data_a.shape[1]
-
-            #%% Video resampling
-
-            t1, t2 = index_/self.fs
-            T_orig = len(x_orig)/self.fs
-            fps = 30
-
-            v1, v2 = int(np.floor(t1*fps)), int(np.floor((T_orig-t2)*fps))
-
-            v_trimmed = v_orig[:,v1:N_vframes-v2]
-
-            data_v = resample(v_trimmed, target_num = N_aframes)
-            data_v = data_v.transpose().reshape((-1,1,67,67,1))
-            data_v = torch.from_numpy(data_v).permute(1,-1,0,2,3).to('cuda').type(torch.cuda.FloatTensor)
-            data_v = self.vfeats(data_v, lengths=None)[0,...].detach().cpu().numpy()
-            newpath = os.path.join("vf", path[-10:].replace("/",'_')+fname[:-4]+"VF.npy")
-            np.save(newpath, data_v)
-
+            data_v = v_orig.transpose().reshape((-1,1,67,67,1)).copy()
+            data_v_hf = np.flip(v_orig.transpose().reshape((-1,1,67,67,1)).copy(), axis = 2) # Horizontal Flip
+            
+            data_v = torch.from_numpy(data_v.astype(np.float32).copy()).permute(1,-1,0,2,3).to('cuda')
+            data_v_hf = torch.from_numpy(data_v_hf.astype(np.float32).copy()).permute(1,-1,0,2,3).to('cuda')
+            
+            data_v = self.vfeats(data_v, lengths=None)[0,...].float().detach().cpu().numpy()
+            data_v_hf = self.vfeats(data_v_hf, lengths=None)[0,...].float().detach().cpu().numpy()
+            
+            path, fname = os.path.split(videofile)
+            newpath = os.path.join(path, fname[:-4]+"VF.npy")
+            np.save(newpath, data_v.T)
+            
+            newpath = os.path.join(path, fname[:-4]+"VF_hf.npy")
+            np.save(newpath, data_v_hf.T)
 
 
     def __getitem__(self, index):
@@ -820,18 +528,12 @@ class SpeechDatasetSequences(data.Dataset):
                     v_trimmed = v_orig[:,v1:N_vframes-v2]
 
                     self.data_v = resample(v_trimmed, target_num = N_aframes)
-                    # print(self.data_v.shape)
-                    # mozz
-
-
-
 
 
                 if self.tot_num_frame >= self.sequence_len:
                     break
 
-        sample_a = self.data_a[:,self.current_frame:self.current_frame +
-                           self.sequence_len]
+        sample_a = self.data_a[:,self.current_frame:self.current_frame + self.sequence_len]
 
 
         if not self.is_extract_visual_features:

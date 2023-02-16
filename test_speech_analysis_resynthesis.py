@@ -18,7 +18,6 @@ from tqdm import tqdm
 import sys
 
 
-
 def evaluate(model_path, num_samples = 1000):
 
     root_dir = '/pathTo/corpus/'
@@ -33,6 +32,7 @@ def evaluate(model_path, num_samples = 1000):
     #shuffle(file_list)
 
     file_list = file_list[0:num_samples]
+    
     # Create score list
     list_score_isdr = []
     list_score_pesq= []
@@ -74,9 +74,10 @@ def evaluate(model_path, num_samples = 1000):
 
 
 if __name__ == '__main__':
+    
     if len(sys.argv) == 2:
         path = sys.argv[1]
         evaluate(path)
 
     else:
-        print('Error: Please indiquate config file')
+        print('Error: Please input the config file')

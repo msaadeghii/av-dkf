@@ -29,6 +29,7 @@ torch.manual_seed(my_seed)
 import soundfile as sf
 import librosa
 import librosa.display
+from asteroid.metrics import get_metrics
 
 import sys
 from tqdm import tqdm
@@ -38,7 +39,6 @@ sys.path.append('dvae/SE')
 import os
 from SE_algorithms import VEM, PEEM, DPEEM, MCEM, GDPEEM, GPEEM
 from DSE_algorithms import DVEM
-from eval_metrics import EvalMetrics
 from vae import build_VAE
 from dkf import build_DKF
 from read_config import myconf
@@ -86,8 +86,6 @@ class SpeechEnhancement:
         self.test_se = test_se
         self.demo = demo
 
-        self.eval_metrics = EvalMetrics(metric=metric)
-
         #%% Parameters
 
         self.compute_scores = compute_scores
@@ -100,7 +98,7 @@ class SpeechEnhancement:
 
         self.eps = np.finfo(float).eps # machine epsilon
 
-        self.niter = niter # results reported in the paper were obtained with 500 iterations
+        self.niter = niter 
         self.nmf_rank = nmf_rank
 
         self.vae_mode = self.cfg.get('Network', 'vae_mode')
@@ -273,12 +271,11 @@ class SpeechEnhancement:
 
             data_v = resample(v_trimmed, target_num = N_aframes)
             data_v = data_v.transpose().reshape((-1,1,67,67,1))
-
+ 
             this_dtype = torch.cuda.FloatTensor if self.device == 'cuda' else torch.FloatTensor
             data_v = torch.from_numpy(data_v).permute(1,-1,0,2,3).to(self.device).type(this_dtype)
             v = self.vfeats(data_v, lengths=None)[0,...].detach().cpu().numpy()
             data_orig_v = torch.from_numpy(v.astype(np.float32).transpose()).to(self.device)
-
 
 
         attention = False
@@ -294,7 +291,7 @@ class SpeechEnhancement:
                 X_abs_2 = torch.from_numpy(X_abs_2.astype(np.float32))
                 X_abs_2 = X_abs_2.to(self.device)
                 if self.vae_type == 'DKF':
-                    _,Z_init, _ = self.vae.inference(X_abs_2.unsqueeze(0).permute(1, 0, -1), data_orig_v.unsqueeze(0).permute(0,-1,1)) # corresponds to the encoder mean
+                    _,Z_init, _ = self.vae.inference(X_abs_2.unsqueeze(0).permute(1, 0, -1), data_orig_v.unsqueeze(0).permute(-1,0,1)) # corresponds to the encoder mean
 
                 elif self.vae_type == 'VAE':
                     _,Z_init, _ = self.vae.inference(X_abs_2, data_orig_v.permute(1,0))
@@ -396,7 +393,7 @@ class SpeechEnhancement:
 
             nepochs_E_step = 20
 
-            algo = DPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
+            algo = DPEEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
                         device=self.device, niter=self.niter, lr=lr,
                         nepochs_E_step=nepochs_E_step, attention = attention, verbose = self.verbose)
         elif algo_type == 'gdpeem':
@@ -407,7 +404,7 @@ class SpeechEnhancement:
 
             nepochs_E_step = 20
 
-            algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(0,-1,1),
+            algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
                         device=self.device, niter=self.niter, lr=lr,
                         nepochs_E_step=nepochs_E_step, attention = attention, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)
 
@@ -443,20 +440,20 @@ class SpeechEnhancement:
 
 
 
-        score_sisdr, score_pesq, score_stoi = self.eval_metrics.eval(x, s_orig)
-
-        input_scores = [score_sisdr, score_pesq, score_stoi]
+        metrics_dict = get_metrics(mix = x, clean = s_orig, estimate = s_hat, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
         
-        if self.verbose:
-            print('Input scores (SI-SDR, PESQ, STOI): ', input_scores)
+        input_scores = [metrics_dict['input_si_sdr'], metrics_dict['input_pesq'], metrics_dict['input_stoi']]
+
 
         #%% Evaluation
-
+        
+        output_scores = []
+        
         if self.compute_scores:
-
-            score_sisdr, score_pesq, score_stoi = self.eval_metrics.eval(s_hat, s_orig)
             info = {"input_scores": input_scores}
-            list_score = [score_sisdr, score_pesq, score_stoi, info]
+            list_score = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi'], info]
+            output_scores = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi']]
+            info = {"output_scores": output_scores}
             list_sample = {"speaker_id": speaker_id,
                                  "noise_type": noise_type,
                                  "SNR": snr_level,
@@ -485,10 +482,10 @@ class SpeechEnhancement:
             sf.write(path_mix, x, self.fs)
             spec_figure = self.get_specs(path_mix, speech_file, path_n_hat, path_s_hat)
 
-
         info = {
             "spec_figure": spec_figure,
             "input_scores": input_scores,
+            "output_scores": output_scores,
             "S_hat_wave": s_hat,
             "N_hat_wave": n_hat,
             "S_hat_spec": algo.S_hat,
@@ -497,4 +494,4 @@ class SpeechEnhancement:
             "clean_wave": s_orig,
             "clean_spec": s_stft
         }
-        return score_sisdr, score_pesq, score_stoi, info
+        return info

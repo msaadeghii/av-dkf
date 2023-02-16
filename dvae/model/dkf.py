@@ -37,7 +37,7 @@ class Flatten(nn.Module):
     def forward(self, input):
         return input.view(input.size(0), -1)
 
-def build_DKF(cfg, device='cpu', vae_mode = 'A-DKF'):
+def build_DKF(cfg, device='cuda', vae_mode = 'A-DKF'):
     ### Set Defaults
     defaults = {'gating_unit_layers' : 2, 'proposed_mean_layers' : 2, "inference" : "gated", "rnn" : "LSTM", "fusion": "dense", "fusion_depth": "early"}
 
@@ -67,6 +67,9 @@ def build_DKF(cfg, device='cpu', vae_mode = 'A-DKF'):
     # Beta-vae
     beta = cfg.getfloat('Training', 'beta')
 
+    # prior loss
+    alpha = cfg.getfloat('Training', 'alpha')
+    
     # Build model
     if vae_mode == 'A-DKF':
 
@@ -85,6 +88,7 @@ def build_DKF(cfg, device='cpu', vae_mode = 'A-DKF'):
                     dense_ztm1_g=dense_ztm1_g, dense_g_z=dense_g_z,
                     dense_z_x=dense_z_x,
                     dropout_p=dropout_p, beta=beta, device=device).to(device)
+        
     elif vae_mode == 'AV-DKF':
 
         model = DKF_AV(x_dim=x_dim, z_dim=z_dim, activation=activation,
@@ -92,7 +96,7 @@ def build_DKF(cfg, device='cpu', vae_mode = 'A-DKF'):
                     num_RNN_gx=num_RNN_gx, bidir_gx=bidir_gx,
                     dense_ztm1_g=dense_ztm1_g, dense_g_z=dense_g_z,
                     dense_z_x=dense_z_x, fusion = fusion, fusion_depth = fusion_depth,
-                    dropout_p=dropout_p, beta=beta, device=device).to(device)
+                    dropout_p=dropout_p, beta=beta, alpha=alpha, device=device).to(device)
 
     return model
 
@@ -104,7 +108,7 @@ class DKF_A(nn.Module):
                  dense_x_gx=[], dim_RNN_gx=128, num_RNN_gx=1, bidir_gx=False,
                  dense_ztm1_g=[], dense_g_z=[],
                  dense_z_x=[128,128], gating_unit_layers = 2, proposed_mean_layers = 2,
-                 dropout_p = 0, beta=1, device='cpu', rnn_cell = "LSTM", inference_type = "normal"):
+                 dropout_p = 0, beta=1, device='cuda', rnn_cell = "LSTM", inference_type = "normal"):
 
         super().__init__()
         ### General parameters
@@ -304,6 +308,7 @@ class DKF_A(nn.Module):
 
 
     def generation_z(self, z_tm1, v=None):
+        
         z_prop = self.mlp_z_prop(z_tm1)
 
         if self.inference_type == "gated":
@@ -333,8 +338,10 @@ class DKF_A(nn.Module):
         # train input: (batch_size, x_dim, seq_len)
         # test input:  (x_dim, seq_len)
         # need input:  (seq_len, batch_size, x_dim)
+        
         if len(x.shape) == 2:
             x = x.unsqueeze(0)
+            
         x = x.permute(-1, 0, 1)
 
         seq_len = x.shape[0]
@@ -617,14 +624,8 @@ class DKF_V(nn.Module):
 
     def inference(self, x, v = None):
 
-        # print(v.shape)
-        # v = torch.stack([self.vfeats(v[i, ...]) for i in range(20)])
-
         v = self.vfeats(v, lengths=None)
         v = v.permute(1,0,-1)
-        # print("out shape", v.shape)
-        # mozz
-
 
         seq_len = v.shape[0]
         batch_size = v.shape[1]
@@ -689,20 +690,13 @@ class DKF_V(nn.Module):
         # train input: (batch_size, x_dim, seq_len)
         # test input:  (x_dim, seq_len)
         # need input:  (seq_len, batch_size, x_dim)
+        
         if len(x.shape) == 2:
             x = x.unsqueeze(0)
             v = v.unsqueeze(0)
 
         x = x.permute(-1, 0, 1)
-        # v = v.permute(-1, 0, 4, 2, 3, 1)
         v = v.permute(0, 3, -1, 2, 1)
-
-        # print(v.shape)
-        # mozz
-
-        # v = v.permute(-1, 0, 1)
-
-        # print(v.shape)
 
         seq_len = x.shape[0]
         batch_size = x.shape[1]
@@ -790,7 +784,7 @@ class DKF_AV(nn.Module):
                  dense_x_gx=[256], dim_RNN_gx=128, num_RNN_gx=1, bidir_gx=False,
                  dense_ztm1_g=[32,64], dense_g_z=[64,32],
                  dense_z_x=[32,64,128,256], landmarks_dim = 67*67, fusion="dense", fusion_depth = "early",
-                 dropout_p = 0, beta=1, device='cpu'):
+                 dropout_p = 0, beta=1, alpha = 0.99, device='cuda'):
 
         super().__init__()
         ### General parameters
@@ -819,37 +813,18 @@ class DKF_AV(nn.Module):
         ### Beta-loss
         self.beta = beta
 
+        ### Prior-loss
+        self.alpha = alpha
 
         ### Visual Features
         self.fusion_depth = fusion_depth
         self.fusion = fusion
         self.dim_visual_features = 512
+        
         self.build()
 
-
     def build(self):
-
-#         config_path = "/home/agolmakani/workarea/av-dvae/lrw_resnet18_mstcn.json"
-#         args_loaded = load_json(config_path)
-#         backbone_type = args_loaded['backbone_type']
-#         width_mult = args_loaded['width_mult']
-#         relu_type = args_loaded['relu_type']
-#         tcn_options = { 'num_layers': args_loaded['tcn_num_layers'],
-#                         'kernel_size': args_loaded['tcn_kernel_size'],
-#                         'dropout': args_loaded['tcn_dropout'],
-#                         'dwpw': args_loaded['tcn_dwpw'],
-#                         'width_mult': args_loaded['tcn_width_mult'],
-#                       }
-
-#         self.vfeats = Lipreading( modality='video',
-#                             num_classes=500,
-#                             tcn_options=tcn_options,
-#                             backbone_type=backbone_type,
-#                             relu_type=relu_type,
-#                             width_mult=width_mult,
-#                             extract_feats=True).cuda()
-#         self.vfeats = load_model("/home/agolmakani/workarea/av-dvae/lrw_resnet18_mstcn_adamw_s3.pth.tar", self.vfeats, allow_size_mismatch=False)
-#         self.vfeats.eval()
+        
         self.encoder_layerV = nn.Linear(self.dim_visual_features, self.dense_x_gx[-1])
         self.layer_mix_encoder = nn.Linear(2*self.dense_x_gx[-1], self.dense_x_gx[-1])
 
@@ -882,8 +857,6 @@ class DKF_AV(nn.Module):
                 dic_layers['dropout'+str(n)] = nn.Dropout(p=self.dropout_p)
 
         self.mlp_x_gx = nn.Sequential(dic_layers)
-
-
 
         self.rnn_gx = nn.LSTM(dim_x_gx, self.dim_RNN_gx, self.num_RNN_gx, bidirectional=self.bidir_gx)
 
@@ -978,20 +951,8 @@ class DKF_AV(nn.Module):
 
     def inference(self, x, v = None, amask = False):
 
-        # print(v.shape)
-        # v = torch.stack([self.vfeats(v[i, ...]) for i in range(20)])
-        # print(v.shape)
-        # v = self.vfeats(v, lengths=None)
-        # print(v.shape)
-        # print("Sheeeeeeeeeeeeeeeesh")
-        # mozz
-
-
         x_g = self.mlp_x_gx(x)
 
-
-
-        v = v.permute(1,0,-1)
         seq_len = v.shape[0]
         batch_size = v.shape[1]
         v_g = self.encoder_layerV(v)
@@ -1002,7 +963,6 @@ class DKF_AV(nn.Module):
                                                  activation = True, residual = False, fusion = self.fusion)
         elif self.fusion == "dense":
             if amask:
-                # zz.data = torch.zeros_like(zz.data)+0.001
                 n_ind = 30
                 mask_ratio = 0.1
                 list_idx = sorted([np.random.randint(0,seq_len) for _ in range(n_ind-1)] + [seq_len])
@@ -1016,19 +976,11 @@ class DKF_AV(nn.Module):
 
             xv_g = self.activation(self.layer_mix_encoder(torch.cat([x_g, v_g], -1)) + x_g)
 
-        # print("out shape", v.shape, x.shape)
-
-
-
-
 
         xv_g = torch.cat((x_g, v_g), axis=-1)
         xv_g = self.layer_mix_encoder(xv_g)
         xv_g = self.activation(xv_g)
         # xv_g = (1/2)*(x_g + v_g)
-
-
-        # print("out shape", xv_g.shape, x_g.shape)
 
         # Create variable holder and send to GPU if needed
         z_mean = torch.zeros((seq_len, batch_size, self.z_dim)).to(self.device)
@@ -1065,17 +1017,13 @@ class DKF_AV(nn.Module):
 
     def fill_z(self, zz, v, amask=False, inf_mask = False, mask_diag_margin = 0, transformer = None, last_layer = None, activation = False, residual = False, fusion = "self_transformer", mask_ratio = 0.1):
 
-
-        # print("out shape", v.shape, x.shape)
-        # import pdb; pdb.set_trace()
         seq_len = v.shape[0]
         batch_size = v.shape[1]
         n_ind = 20
 
         list_idx2 = None
         if amask:
-            # zz.data = torch.zeros_like(zz.data)+0.001
-
+            
             list_idx = sorted([np.random.randint(0,seq_len) for _ in range(n_ind-1)] + [seq_len])
             modidx = np.random.choice(range(n_ind), int(mask_ratio*n_ind), replace = False)
             list_idx2= [i for i in range(seq_len) if sum(np.asarray(list_idx)<=i) % n_ind in modidx]
@@ -1112,33 +1060,25 @@ class DKF_AV(nn.Module):
 
 
     def generation_z(self, z_tm1, v):
-        # v = self.vfeats(v, lengths=None)
-        v = v.permute(1,0,-1)
+        
         v_p = self.prior_layerV(v)
         v_p = self.activation(v_p)
 
         zv = torch.cat((z_tm1, v_p), axis=-1)
         zv = self.layer_mix_prior(zv)
         zv = self.activation(zv)
-        # zv = (1/2)*(z_tm1 + v_p)
-
-        # print("out shape", z_tm1.shape, v_p.shape, zv.shape)
-        # mozz
 
         gate = self.mlp_gate(zv)
         z_prop = self.mlp_z_prop(zv)
         z_mean_p = (1 - gate) * self.prior_mean(zv) + gate * z_prop
         z_var_p = self.prior_logvar(z_prop)
         z_logvar_p = torch.log(z_var_p) # consistant with other models
-        # print("out shape", z_tm1.shape, gate.shape, z_prop.shape)
-        # mozz
         z_p = self.reparameterization(z_mean_p, z_logvar_p)
         return z_p, z_mean_p, z_logvar_p
 
 
     def generation_x(self, z, v):
-        # v = self.vfeats(v, lengths=None)
-        v = v.permute(1,0,-1)
+        
         v_p = self.decoder_layerV(v)
         v_p = self.activation(v_p)
 
@@ -1159,24 +1099,17 @@ class DKF_AV(nn.Module):
         # train input: (batch_size, x_dim, seq_len)
         # test input:  (x_dim, seq_len)
         # need input:  (seq_len, batch_size, x_dim)
+        
         if len(x.shape) == 2:
             x = x.unsqueeze(0)
             v = v.unsqueeze(0)
 
-        x = x.permute(-1, 0, 1)
-        # v = v.permute(-1, 0, 4, 2, 3, 1)
-        # v = v.permute(0, 3, -1, 2, 1)
-        v = v.permute(0,-1,1)
-        # print(v.shape)
-        # mozz
-
-        # v = v.permute(-1, 0, 1)
-
-        # print(v.shape)
-
+        x = x.permute(-1, 0, 1).float()
+        v = v.permute(-1, 0, 1).float() 
+        
         seq_len = x.shape[0]
         batch_size = x.shape[1]
-
+        
         # main part
         z, z_mean, z_logvar = self.inference(x, v, amask = amask)
         z_0 = torch.zeros(1, batch_size, self.z_dim).to(self.device)
@@ -1190,7 +1123,7 @@ class DKF_AV(nn.Module):
         if compute_loss:
             loss_tot, loss_recon, loss_KLD = self.get_loss(x, y, z_mean, z_logvar, y_zp,
                                                         z_mean_p, z_logvar_p,
-                                                        seq_len, batch_size, self.beta)
+                                                        seq_len, batch_size, self.beta, self.alpha)
             self.loss = (loss_tot, loss_recon, loss_KLD)
 
         # output of NN:    (seq_len, batch_size, dim)
@@ -1205,13 +1138,12 @@ class DKF_AV(nn.Module):
         return self.y
 
 
-    def get_loss(self, x, y, z_mean, z_logvar, y_zp, z_mean_p, z_logvar_p, seq_len, batch_size, beta=1, alpha=0.9):
+    def get_loss(self, x, y, z_mean, z_logvar, y_zp, z_mean_p, z_logvar_p, seq_len, batch_size, beta=1, alpha=0.99):
 
         loss_recon = torch.sum( x/y + torch.log(y))
         loss_KLD = -0.5 * torch.sum(z_logvar - z_logvar_p
                 - torch.div(z_logvar.exp() + (z_mean - z_mean_p).pow(2), z_logvar_p.exp()))
-        loss_recon_zp = torch.sum( x/y_zp - torch.log(x/y_zp) - 1)
-
+        loss_recon_zp = torch.sum( x/y_zp + torch.log(y_zp))
 
         loss_recon = loss_recon / (batch_size * seq_len)
         loss_recon_zp = loss_recon_zp / (batch_size * seq_len)

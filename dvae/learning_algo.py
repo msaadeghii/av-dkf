@@ -10,6 +10,7 @@ License agreement in LICENSE.txt
 The main python file for model training, data test and performance evaluation, see README.md for further information
 """
 
+from comet_ml import Experiment
 
 import os
 import shutil
@@ -21,8 +22,9 @@ import torch
 import librosa
 import soundfile as sf
 import matplotlib.pyplot as plt
-from .utils import myconf, get_logger, EvalMetrics, SpeechDatasetSequences, SpeechSequencesRandom, SpeechDatasetFrames, SpeechSequencesFull
-from .model import build_VAE, build_DKF, build_KVAE, build_STORN, build_VRNN, build_SRNN, build_RVAE, build_DSAE
+from .utils import myconf, get_logger, SpeechDatasetSequences, SpeechDatasetFrames, SpeechSequencesFull
+from .utils import get_metrics
+from .model import build_VAE, build_DKF
 from sklearn.metrics import mean_squared_error as mse_sk
 import cv2
 from tqdm import tqdm
@@ -32,6 +34,32 @@ from lipreading.utils import load_json, save2npz
 from lipreading.utils import showLR, calculateNorm2, AverageMeter
 from lipreading.utils import load_model, CheckpointSaver
 from lipreading.model import Lipreading
+
+import configparser
+from pprint import pprint
+
+class IterMeter(object):
+    """keeps track of total iterations"""
+    def __init__(self):
+        self.val = 0
+
+    def step(self):
+        self.val += 1
+
+    def get(self):
+        return self.val
+    
+def ini_to_dict(file_path):
+    config = configparser.ConfigParser()
+    config.read(file_path)
+    
+    config_dict = {}
+    for section in config.sections():
+        config_dict[section] = {}
+        for key, value in config.items(section):
+            config_dict[section][key] = value
+    
+    return config_dict
 
 def Hoyer_sparsity(z):
 
@@ -82,9 +110,6 @@ def extract_frames(x, v_orig, STFT_dict, trim=True, extract_visual_features = Tr
 
     T_orig = len(x_trimmed)
 
-    # x_pad = np.pad(x_trimmed, int(STFT_dict["nfft"] // 2), mode='reflect')
-    # (cf. librosa.core.stft)
-
     X = librosa.stft(x_trimmed, n_fft=STFT_dict["nfft"], hop_length=STFT_dict["hop"],
                      win_length=STFT_dict["wlen"],
                      window=STFT_dict["win"]) # STFT
@@ -97,7 +122,6 @@ def extract_frames(x, v_orig, STFT_dict, trim=True, extract_visual_features = Tr
         ########################### upsample video ############################
         v = resample(v_orig, target_num = N_aframes)
 
-        # print(v.shape)
         v = v.transpose().reshape([-1, 67,67, 1])
         v_up = np.asarray([np.asarray([v[x, :, :, :] for x in [max(0, i) for i in range(k-5, k)]]) for k in range(v.shape[0])])
     else:
@@ -143,6 +167,8 @@ class LearningAlgorithm():
 
         self.cfg.read(self.config_file)
 
+        self.hparams = ini_to_dict(self.config_file)
+        
         self.default_params = {'rnn' : 'LSTM', 'inference' : 'gated', 'overlap' : 1, "v_vae_path" : None, "pretrained_model" : None, "shuffle_file_list" : True, "shuffle_samples_in_batch" : True}
 
         self.model_name = self.cfg.get('Network', 'name')
@@ -162,7 +188,8 @@ class LearningAlgorithm():
         # Get host name and date
         self.hostname = socket.gethostname()
         self.date = datetime.datetime.now().strftime("%Y-%m-%d-%Hh%M")
-
+        self.api_key = self.cfg.get('User', 'api_key')
+        
         # Load STFT parameters
         wlen_sec = self.cfg.getfloat('STFT', 'wlen_sec')
         hop_percent = self.cfg.getfloat('STFT', 'hop_percent')
@@ -186,7 +213,7 @@ class LearningAlgorithm():
         # Load model parameters
         self.use_cuda = self.cfg.getboolean('Training', 'use_cuda')
         self.device = 'cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu'
-
+        
         # Build model
         self.build_model()
 
@@ -197,18 +224,6 @@ class LearningAlgorithm():
             self.model = build_VAE(cfg=self.cfg, device=self.device, vae_mode = self.vae_mode, exp_mode = 'train', v_vae_path = self.v_vae_path)
         elif self.model_name == 'DKF':
             self.model = build_DKF(cfg=self.cfg, device=self.device, vae_mode = self.vae_mode)
-        elif self.model_name == 'KVAE':
-            self.model = build_KVAE(cfg=self.cfg, device=self.device)
-        elif self.model_name == 'STORN':
-            self.model = build_STORN(cfg=self.cfg, device=self.device)
-        elif self.model_name == 'VRNN':
-            self.model = build_VRNN(cfg=self.cfg, device=self.device)
-        elif self.model_name == 'SRNN':
-            self.model = build_SRNN(cfg=self.cfg, device=self.device)
-        elif self.model_name == 'RVAE':
-            self.model = build_RVAE(cfg=self.cfg, device=self.device)
-        elif self.model_name == 'DSAE':
-            self.model = build_DSAE(cfg=self.cfg, device=self.device)
 
         if self.use_visual_feature_extractor:
             self.vfeats = self.build_visual_extractor()
@@ -219,20 +234,9 @@ class LearningAlgorithm():
         self.optimization  = self.cfg.get('Training', 'optimization')
         lr = self.cfg.getfloat('Training', 'lr')
 
-        # Init optimizer (Adam by default)
-        if self.model_name=='KVAE':
-            lr_tot = self.cfg.getfloat('Training', 'lr_tot')
-            if self.optimization == 'adam':
-                self.optimizer_vae = torch.optim.Adam(self.model.iter_vae, lr=lr)
-                self.optimizer_vae_kf = torch.optim.Adam(self.model.iter_vae_kf, lr=lr_tot)
-                self.optimizer_all = torch.optim.Adam(self.model.iter_all, lr=lr_tot)
-            else:
-                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-
-        else:
-
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-    def build_dataloader(self, train_data_dir, val_data_dir, sequence_len, batch_size, STFT_dict, use_random_seq=False, overlap=1, vf_root = None):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        
+    def build_dataloader(self, train_data_dir, val_data_dir, sequence_len, batch_size, STFT_dict, use_random_seq=False, overlap=1, vf_root = None, extract_and_save_visual_feats = False):
 
         # List all the data with certain suffix
         data_suffix = self.cfg.get('DataFrame', 'suffix')
@@ -247,6 +251,7 @@ class LearningAlgorithm():
         train_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'train_data_NTCD')) for name in files if name.endswith('.wav')]
 
         val_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'val_data_NTCD')) for name in files if name.endswith('.wav')]
+        
         if self.model_name == 'VAE':
             train_dataset = SpeechDatasetFrames(file_list=train_file_list, sequence_len=sequence_len,
                                                   STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name, vf_root = vf_root)
@@ -254,14 +259,23 @@ class LearningAlgorithm():
                                                     STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name, vf_root = vf_root)
 
         elif self.model_name == 'DKF':
-
-
             train_dataset = SpeechSequencesFull(file_list=train_file_list, sequence_len=sequence_len, overlap=overlap,
-                                                  STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name, gaussian = 0, vf_root = vf_root, extract_visual_features = True)
+                                                  STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name, gaussian = 0, vf_root = vf_root, extract_visual_features = False)
             val_dataset = SpeechSequencesFull(file_list=val_file_list, sequence_len=sequence_len, overlap=overlap,
-                                                    STFT_dict=self.STFT_dict, shuffle=True, name=self.dataset_name, gaussian = 0, vf_root = vf_root, extract_visual_features = True)
+                                                    STFT_dict=self.STFT_dict, shuffle=True, name=self.dataset_name, gaussian = 0, vf_root = vf_root, extract_visual_features = False)
 
 
+        # Extract and save visual features a single time:
+        if extract_and_save_visual_feats:
+            print('Extracting and saving visual features ... ')
+            test_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'test_data_NTCD', 'clean')) for name in files if name.endswith('.wav')]
+            SpeechDatasetSequences(file_list=test_file_list, sequence_len=sequence_len, overlap=1,
+                                                    STFT_dict=self.STFT_dict, shuffle=True, name=self.dataset_name, extract_visual_features = True)
+            SpeechDatasetSequences(file_list=train_file_list, sequence_len=sequence_len, overlap=1,
+                                                    STFT_dict=self.STFT_dict, shuffle=True, name=self.dataset_name, extract_visual_features = True)     
+            SpeechDatasetSequences(file_list=val_file_list, sequence_len=sequence_len, overlap=1,
+                                                    STFT_dict=self.STFT_dict, shuffle=True, name=self.dataset_name, extract_visual_features = True)
+            
         train_num = train_dataset.__len__()
         val_num = val_dataset.__len__()
 
@@ -272,50 +286,6 @@ class LearningAlgorithm():
                                                        num_workers = num_workers)
         val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size,
                                                      shuffle=True,
-                                                     num_workers = num_workers)
-
-        return train_dataloader, val_dataloader, train_num, val_num
-
-    def build_dataloader2(self, train_data_dir, val_data_dir, sequence_len, batch_size, STFT_dict, use_random_seq=False, overlap=1):
-
-        # List all the data with certain suffix
-        data_suffix = self.cfg.get('DataFrame', 'suffix')
-        train_file_list = librosa.util.find_files(train_data_dir, ext=data_suffix)
-        val_file_list = librosa.util.find_files(val_data_dir, ext=data_suffix)
-        # Generate dataloader for pytorch
-        num_workers = self.cfg.getint('DataFrame', 'num_workers')
-        shuffle_file_list = self.cfg.get('DataFrame', 'shuffle_file_list', fallback = self.default_params['shuffle_file_list'])
-        shuffle_samples_in_batch = self.cfg.get('DataFrame', 'shuffle_samples_in_batch', fallback = self.default_params['shuffle_samples_in_batch'])
-        data_dir = self.cfg.get('User', 'data_dir')
-
-        train_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'train_data_NTCD')) for name in files if name.endswith('.wav')]
-
-        val_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'val_data_NTCD')) for name in files if name.endswith('.wav')]
-
-        if self.model_name == 'VAE':
-            train_dataset = SpeechDatasetFrames(file_list=train_file_list, sequence_len=sequence_len,
-                                                  STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name)
-            val_dataset = SpeechDatasetFrames(file_list=val_file_list, sequence_len=sequence_len,
-                                                    STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name)
-
-        elif self.model_name == 'DKF':
-
-            train_dataset = SpeechSequencesFull(file_list=train_file_list, sequence_len=sequence_len, overlap=overlap,
-                                                  STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name)
-            val_dataset = SpeechSequencesFull(file_list=val_file_list, sequence_len=sequence_len, overlap=overlap,
-                                                    STFT_dict=self.STFT_dict, shuffle=shuffle_file_list, name=self.dataset_name)
-
-
-        train_num = train_dataset.__len__()
-        val_num = val_dataset.__len__()
-
-
-        # Create dataloader
-        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size,
-                                                       shuffle=shuffle_samples_in_batch,
-                                                       num_workers = num_workers)
-        val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size,
-                                                     shuffle=shuffle_samples_in_batch,
                                                      num_workers = num_workers)
 
         return train_dataloader, val_dataloader, train_num, val_num
@@ -359,10 +329,10 @@ class LearningAlgorithm():
         logger_type = self.cfg.getint('User', 'logger_type')
         logger = get_logger(log_file, logger_type)
 
-        # Print basical infomation
+        # Print basic infomation
         for log in self.get_basic_info():
             logger.info(log)
-        logger.info('In this experiment, result will be saved in: ' + save_dir)
+        logger.info('In this experiment, the results will be saved in: ' + save_dir)
 
         # Print model infomation (optional)
         if self.cfg.getboolean('User', 'print_model'):
@@ -371,7 +341,6 @@ class LearningAlgorithm():
 
         # Init optimizer
         self.init_optimizer()
-
 
         batch_size = self.cfg.getint('Training', 'batch_size')
         sequence_len = self.cfg.getint('DataFrame','sequence_len')
@@ -391,17 +360,15 @@ class LearningAlgorithm():
         logger.info(log_message)
         print(log_message)
 
-        # KVAE needs a schedule training
-        if self.model_name == 'KVAE':
-            self.train_kvae(logger, save_dir, train_dataloader, val_dataloader, train_num, val_num)
-        else:
-            path = self.train_normal(logger, save_dir, train_dataloader, val_dataloader, train_num, val_num)
-
+        path = self.train_normal(logger, save_dir, train_dataloader, val_dataloader, train_num, val_num)
+        
         return path
 
 
     def train_normal(self, logger, save_dir, train_dataloader, val_dataloader, train_num, val_num):
 
+        iter_meter = IterMeter()
+        
         # Load training parameters
         epochs = self.cfg.getint('Training', 'epochs')
         early_stop_patience = self.cfg.getint('Training', 'early_stop_patience')
@@ -412,12 +379,20 @@ class LearningAlgorithm():
             checkpoint = torch.load(self.pretrained_model)
             if 'model_state_dict' in checkpoint.keys():
                 checkpoint = checkpoint['model_state_dict']
-            # print(checkpoint.keys())
-            print("Loading Model...")
+            print("Loading Model ...")
             self.model.load_state_dict(checkpoint, strict=False)
 
-
-
+        experiment = Experiment(self.api_key, project_name=self.hparams['User']['project_name'])
+        experiment.log_parameters(self.hparams)
+        experiment_name = '_'.join(self.hparams['User']['cometml_tags'].split(","))
+        
+        for tag in self.hparams['User']['cometml_tags'].split(","):
+            experiment.add_tag(tag)
+        if self.hparams['User']['experiment_name'] is not None:
+            experiment.set_name(self.hparams['User']['experiment_name'])
+        else:
+            experiment.set_name(experiment_name)
+    
         # Create python list for loss
         train_loss = np.zeros((epochs,))
         val_loss = np.zeros((epochs,))
@@ -437,22 +412,13 @@ class LearningAlgorithm():
         for epoch in range(epochs):
 
             start_time = datetime.datetime.now()
-
+    
             # Batch training
             for batch_idx, (batch_a, batch_v) in tqdm(enumerate(train_dataloader)):
-                # if batch_idx == 20:
-                #     break
-                batch_a, batch_v = batch_a.to(self.device), batch_v.to(self.device)
-                # print(batch_a.shape)
-                # print(batch_v.shape)
-                # mozz
-                if random.random() < 0.2:
-                    amask = True
-                else:
-                    amask = False
-                self.model(batch_a, batch_v, compute_loss=True, amask = amask)
-                # self.model(batch_a, batch_v, compute_loss=True)
 
+                batch_a, batch_v = batch_a.to(self.device), batch_v.to(self.device)
+
+                self.model(batch_a, batch_v, compute_loss=True)
 
                 loss_tot, loss_recon, loss_KLD = self.model.loss
 
@@ -463,15 +429,13 @@ class LearningAlgorithm():
                 train_loss[epoch] += loss_tot.item()
                 train_recon[epoch] += loss_recon.item()
                 train_KLD[epoch] += loss_KLD.item()
-
+        
             # Validation
             for batch_idx, (batch_a, batch_v) in tqdm(enumerate(val_dataloader)):
-                # if batch_idx == 50:
-                #     break
+
                 batch_a, batch_v = batch_a.to(self.device), batch_v.to(self.device)
 
                 self.model(batch_a, batch_v, compute_loss=True)
-
 
                 loss_tot, loss_recon, loss_KLD = self.model.loss
 
@@ -487,6 +451,16 @@ class LearningAlgorithm():
             val_recon[epoch] = val_recon[epoch] / val_num
             val_KLD[epoch] = val_KLD[epoch] / val_num
 
+            experiment.log_metric('train/recon', train_recon[epoch], step=iter_meter.get())
+            experiment.log_metric('train/KLD', train_KLD[epoch], step=iter_meter.get())
+            experiment.log_metric('train/total', train_loss[epoch], step=iter_meter.get())
+
+            experiment.log_metric('val/recon', val_recon[epoch], step=iter_meter.get())
+            experiment.log_metric('val/KLD', val_KLD[epoch], step=iter_meter.get())
+            experiment.log_metric('val/total', val_loss[epoch], step=iter_meter.get())
+            
+            iter_meter.step()
+            
             # Early stop patiance
             if val_loss[epoch] < best_val_loss:
                 best_val_loss = val_loss[epoch]
@@ -513,7 +487,7 @@ class LearningAlgorithm():
             if epoch % save_frequency == 0:
                 save_file = os.path.join(save_dir, self.model_name + '-' + self.vae_mode + '_epoch' + str(cur_best_epoch) + '.pt')
                 torch.save(self.model.state_dict(), save_file)
-
+        
         # Save the final weights of network with the best validation loss
         train_loss = train_loss[:epoch+1]
         val_loss = val_loss[:epoch+1]
@@ -566,158 +540,6 @@ class LearningAlgorithm():
         plt.savefig(fig_file)
 
         return save_file
-
-    def train_kvae(self, logger, save_dir, train_dataloader, val_dataloader, train_num, val_num):
-
-        # Load training parameters
-        epochs = self.cfg.getint('Training', 'epochs')
-        early_stop_patience = self.cfg.getint('Training', 'early_stop_patience')
-        save_frequency = self.cfg.getint('Training', 'save_frequency')
-        scheduler_training = self.cfg.getboolean('Training', 'scheduler_training')
-        only_vae_epochs = self.cfg.getint('Training', 'only_vae_epochs')
-        kf_update_epochs = self.cfg.getint('Training', 'kf_update_epochs')
-
-        # Create python list for loss
-        train_loss = np.zeros((epochs,))
-        val_loss = np.zeros((epochs,))
-        train_vae = np.zeros((epochs,))
-        train_lgssm = np.zeros((epochs,))
-        val_vae = np.zeros((epochs,))
-        val_lgssm = np.zeros((epochs,))
-        best_val_loss = np.inf
-        cpt_patience = 0
-        cur_best_epoch = epochs
-        best_state_dict = self.model.state_dict()
-
-
-        # Train with mini-batch SGD
-        for epoch in range(epochs):
-
-            if scheduler_training:
-                if epoch < only_vae_epochs:
-                    optimizer = self.optimizer_vae
-                elif epoch < only_vae_epochs + kf_update_epochs:
-                    optimizer = self.optimizer_vae_kf
-                else:
-                    optimizer = self.optimizer_all
-            else:
-                optimizer = self.optimizer_all
-
-
-            start_time = datetime.datetime.now()
-
-            # Batch training
-            for batch_idx, batch_data in enumerate(train_dataloader):
-
-                batch_data = batch_data.to(self.device)
-                recon_batch_data = self.model(batch_data, compute_loss=True)
-
-                loss_tot, loss_vae, loss_lgssm = self.model.loss
-                optimizer.zero_grad()
-                loss_tot.backward()
-                optimizer.step()
-
-                train_loss[epoch] += loss_tot.item()
-                train_vae[epoch] += loss_vae.item()
-                train_lgssm[epoch] += loss_lgssm.item()
-
-            # Validation
-            for batch_idx, batch_data in enumerate(val_dataloader):
-
-                batch_data = batch_data.to(self.device)
-                self.model(batch_data, compute_loss=True)
-
-                loss_tot, loss_vae, loss_lgssm = self.model.loss
-
-                val_loss[epoch] += loss_tot.item()
-                val_vae[epoch] += loss_vae.item()
-                val_lgssm[epoch] += loss_lgssm.item()
-
-
-            # Loss normalization
-            train_loss[epoch] = train_loss[epoch]/ train_num
-            val_loss[epoch] = val_loss[epoch] / val_num
-            train_vae[epoch] = train_vae[epoch] / train_num
-            train_lgssm[epoch] = train_lgssm[epoch]/ train_num
-            val_vae[epoch] = val_vae[epoch] / val_num
-            val_lgssm[epoch] = val_lgssm[epoch] / val_num
-
-
-            # Early stop patiance
-            if val_loss[epoch] < best_val_loss:
-                best_val_loss = val_loss[epoch]
-                cpt_patience = 0
-                best_state_dict = self.model.state_dict()
-                cur_best_epoch = epoch
-            else:
-                cpt_patience += 1
-
-            # Training time
-            end_time = datetime.datetime.now()
-            interval = (end_time - start_time).seconds / 60
-            log_message = 'Epoch: {} train loss: {:.4f} val loss {:.4f} training time {:.2f}m'.format(epoch, train_loss[epoch], val_loss[epoch], interval)
-            logger.info(log_message)
-
-            # Stop traning if early-stop triggers
-            if cpt_patience == early_stop_patience:
-                logger.info('Early stop patience achieved')
-                break
-
-            # Save model parameters regularly
-            if epoch % save_frequency == 0:
-                save_file = os.path.join(save_dir, self.model_name + '_epoch' + str(cur_best_epoch) + '.pt')
-                torch.save(self.model.state_dict(), save_file)
-
-        # Save the final weights of network with the best validation loss
-        train_loss = train_loss[:epoch+1]
-        val_loss = val_loss[:epoch+1]
-        train_vae = train_vae[:epoch+1]
-        train_lgssm = train_lgssm[:epoch+1]
-        val_vae = val_vae[:epoch+1]
-        val_lgssm = val_lgssm[:epoch+1]
-        save_file = os.path.join(save_dir, self.model_name + '_final_epoch' + str(cur_best_epoch) + '.pt')
-        torch.save(best_state_dict, save_file)
-
-        # Save the training loss and validation loss
-        loss_file = os.path.join(save_dir, 'loss_model.pckl')
-        with open(loss_file, 'wb') as f:
-            pickle.dump([train_loss, val_loss, train_vae, train_lgssm, val_vae, val_lgssm], f)
-
-
-        # Save the loss figure
-        tag = self.vae_mode
-        plt.clf()
-        fig = plt.figure(figsize=(8,6))
-        plt.rcParams['font.size'] = 12
-        plt.plot(train_loss, label='training loss')
-        plt.plot(val_loss, label='validation loss')
-        plt.legend(fontsize=16, title=self.model_name, title_fontsize=20)
-        plt.xlabel('epochs', fontdict={'size':16})
-        plt.ylabel('loss', fontdict={'size':16})
-        fig_file = os.path.join(save_dir, 'loss_{}.png'.format(tag))
-        plt.savefig(fig_file)
-
-        plt.clf()
-        fig = plt.figure(figsize=(8,6))
-        plt.rcParams['font.size'] = 12
-        plt.plot(train_vae, label='VAE')
-        plt.plot(train_lgssm, label='LGSSM')
-        plt.legend(fontsize=16, title='{}: Training'.format(self.model_name), title_fontsize=20)
-        plt.xlabel('epochs', fontdict={'size':16})
-        plt.ylabel('loss', fontdict={'size':16})
-        fig_file = os.path.join(save_dir, 'loss_train_{}.png'.format(tag))
-        plt.savefig(fig_file)
-
-        plt.clf()
-        fig = plt.figure(figsize=(8,6))
-        plt.rcParams['font.size'] = 12
-        plt.plot(val_vae, label='VAE')
-        plt.plot(val_lgssm, label='LGSSM')
-        plt.legend(fontsize=16, title='{}: Validation'.format(self.model_name), title_fontsize=20)
-        plt.xlabel('epochs', fontdict={'size':16})
-        plt.ylabel('loss', fontdict={'size':16})
-        fig_file = os.path.join(save_dir, 'loss_val_{}.png'.format(tag))
-        plt.savefig(fig_file)
 
 
     def generate_prior(self, sample_length, audio_file = None, state_dict_file=None, save_flag = False, seed = 0, save_video = False):
@@ -852,10 +674,9 @@ class LearningAlgorithm():
                 sf.write(os.path.join(path, name[:-4]+'-prior_nophase.wav'), scale_prior_nophase*p_recon_nophase, fs_x)
                 sf.write(os.path.join(path, name[:-4]+'-prior.wav'), scale_prior*p_recon, fs_x)
 
-        score_isdr, score_pesq, score_stoi = self.eval_metrics(audio_ref = x, audio_est = scale_norm*x_recon)
-        spm_a = sparsity_measure(z_mean)
-
-        return score_isdr, score_pesq, score_stoi, spm_a
+        metrics_dict = get_metrics(mix = x, clean = x, est = scale_norm*x_recon, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
+        
+        return metrics_dict
 
     def build_visual_extractor(self):
         config_path = "./lipreading/data/lrw_resnet18_mstcn.json"
@@ -984,23 +805,9 @@ class LearningAlgorithm():
         if save_flag == True:
             sf.write(audio_recon, scale_norm*x_recon, fs_x)
 
-        score_isdr, score_pesq, score_stoi = self.eval_metrics(audio_ref = x, audio_est = scale_norm*x_recon)
-        r2_score_a = compute_rmse(np.abs(X_recon), np.abs(X))
-
-
-        return score_isdr, score_pesq, score_stoi, r2_score_a
-
-    def eval_metrics(self, audio_ref, audio_est, metric='all'):
-        """
-        Input: a reference audio and a generated audio
-        Output: score(s) from different evaluation metrics
-        """
-
-        eval_metrics = EvalMetrics(metric=metric)
-
-        score_isdr, score_pesq, score_stoi = eval_metrics.eval(audio_est, audio_ref)
-
-        return score_isdr, score_pesq, score_stoi
+        metrics_dict = get_metrics(mix = x, clean = x, est = scale_norm*x_recon, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
+        
+        return metrics_dict
 
 
     def test(self, data_dir, state_dict_file=None, recon_dir=None):
