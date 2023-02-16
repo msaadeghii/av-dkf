@@ -25,7 +25,7 @@ You can monitor model training using [Comet ML](https://www.comet.com/). To set 
 
 **Note:** You should download a [pretrained lipreading model](https://github.com/mpc001/Lipreading_using_Temporal_Convolutional_Networks#model-zoo) for visual feature extraction, and put it in `lipreading/data`.
 
-### Training
+## Training
 
 Assuming that you have already cloned this repository and are in the `av-dkf` directory:
 
@@ -39,11 +39,11 @@ Assuming that you have already cloned this repository and are in the `av-dkf` di
 
 5. The main training script is `train.sh`.
 
-### Pretrained models
+## Pretrained models
 
 You can find some pretrained VAE models in the `saved_model` directory. The provided models are `A-VAE` & `AV-VAE` for non-dynamical models, and `A-DKF` & `AV-DKF` for dynamical (DKF) models.
 
-### Evaluation
+## Evaluation
 
 As said earlier, you can evaluate the performance of your trained model via either `speech analysis-resynthesis` or `speech enhancement`. In the former case, the input speech is first encoded by the trained VAE encoder to get the corresponding latent codes, and then an estimate of the input speech is reconstructed in the output of the decoder using the latent codes as the input. The quality of the reconstructed speech is then compared with the input speech data. The corresponding function is the `generate` method within `dvae/learning_algo.py`. You can find the script `test_speech_analysis_resynthesis.py` useful to perform this task.
 
