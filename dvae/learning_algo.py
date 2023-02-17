@@ -23,13 +23,14 @@ import librosa
 import soundfile as sf
 import matplotlib.pyplot as plt
 from .utils import myconf, get_logger, SpeechDatasetSequences, SpeechDatasetFrames, SpeechSequencesFull
-from .utils import get_metrics
 from .model import build_VAE, build_DKF
 from sklearn.metrics import mean_squared_error as mse_sk
 import cv2
 from tqdm import tqdm
 import random
+from asteroid.metrics import get_metrics
 
+from .utils import cometml_logger
 from lipreading.utils import load_json, save2npz
 from lipreading.utils import showLR, calculateNorm2, AverageMeter
 from lipreading.utils import load_model, CheckpointSaver
@@ -164,7 +165,7 @@ class LearningAlgorithm():
             raise ValueError('Invalid config file path')
 
         self.cfg = myconf()
-
+        
         self.cfg.read(self.config_file)
 
         self.hparams = ini_to_dict(self.config_file)
@@ -210,6 +211,8 @@ class LearningAlgorithm():
         STFT_dict['trim'] = self.cfg.getboolean('STFT', 'trim')
         self.STFT_dict = STFT_dict
 
+        self.audioSpec_logger = cometml_logger.AudioSpecLogger(STFT_dict = self.STFT_dict)
+            
         # Load model parameters
         self.use_cuda = self.cfg.getboolean('Training', 'use_cuda')
         self.device = 'cuda' if torch.cuda.is_available() and self.use_cuda else 'cpu'
@@ -373,7 +376,8 @@ class LearningAlgorithm():
         epochs = self.cfg.getint('Training', 'epochs')
         early_stop_patience = self.cfg.getint('Training', 'early_stop_patience')
         save_frequency = self.cfg.getint('Training', 'save_frequency')
-
+        log_output = self.cfg.get('User', 'log_output')
+        
         #reload model
         if self.pretrained_model is not None:
             checkpoint = torch.load(self.pretrained_model)
@@ -414,7 +418,7 @@ class LearningAlgorithm():
             start_time = datetime.datetime.now()
     
             # Batch training
-            for batch_idx, (batch_a, batch_v) in tqdm(enumerate(train_dataloader)):
+            for batch_idx, (batch_a, batch_v, _) in tqdm(enumerate(train_dataloader)):
 
                 batch_a, batch_v = batch_a.to(self.device), batch_v.to(self.device)
 
@@ -431,11 +435,11 @@ class LearningAlgorithm():
                 train_KLD[epoch] += loss_KLD.item()
         
             # Validation
-            for batch_idx, (batch_a, batch_v) in tqdm(enumerate(val_dataloader)):
+            for batch_idx, (batch_a, batch_v, batch_phase) in tqdm(enumerate(val_dataloader)):
 
                 batch_a, batch_v = batch_a.to(self.device), batch_v.to(self.device)
 
-                self.model(batch_a, batch_v, compute_loss=True)
+                batch_a_recon = self.model(batch_a, batch_v, compute_loss=True)
 
                 loss_tot, loss_recon, loss_KLD = self.model.loss
 
@@ -443,6 +447,14 @@ class LearningAlgorithm():
                 val_recon[epoch] += loss_recon.item()
                 val_KLD[epoch] += loss_KLD.item()
 
+                if log_output:
+                    batch_phase = batch_phase.to(self.device)
+                    self.audioSpec_logger.log_audio_spectrogram(
+                        batch_a.detach(),
+                        batch_a_recon.detach(),
+                        batch_phase.detach(),
+                        experiment, step=iter_meter.get(), tag='validation_data_', max_batch_items=5)
+                
             # Loss normalization
             train_loss[epoch] = train_loss[epoch]/ train_num
             val_loss[epoch] = val_loss[epoch] / val_num

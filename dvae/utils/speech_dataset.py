@@ -304,11 +304,11 @@ class SpeechSequencesFull(data.Dataset):
         else:
             x = x_orig
         x = np.pad(x, int(self.nfft // 2), mode='reflect')
-        # Sequence tailor
-        # x = x_orig[seq_start:seq_end]
 
         # Normalize sequence
         x = x/np.max(np.abs(x))
+        
+        # Add small Gaussian noise
         if self.gaussian > 0:
                 x += self.gaussian * np.random.randn(*x.shape)
 
@@ -320,7 +320,11 @@ class SpeechSequencesFull(data.Dataset):
 
         # Square of magnitude
         data_a = (audio_spec[:,:,0]**2 + audio_spec[:,:,1]**2).float()
+        phase_a = torch.angle(audio_spec[:,:,0].squeeze() + 1j * audio_spec[:,:,1].squeeze())
+        
         sample_a = data_a[...,seq_start:seq_end]
+        sample_phase_a = phase_a[...,seq_start:seq_end]
+        
         # Read video file
         path, fname = os.path.split(wavfile)
 
@@ -349,7 +353,7 @@ class SpeechSequencesFull(data.Dataset):
         sample_v = data_v.T
         sample_v = sample_v[...,seq_start:seq_end]
 
-        return sample_a, sample_v
+        return sample_a, sample_v, sample_phase_a
 
 
 class SpeechDatasetSequences(data.Dataset):

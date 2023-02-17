@@ -41,7 +41,7 @@ Assuming that you have already cloned this repository and are in the `av-dkf` di
 
 ## Pretrained models
 
-You can find some pretrained VAE models in the `saved_model` directory. The provided models are `A-VAE` & `AV-VAE` for non-dynamical models, and `A-DKF` & `AV-DKF` for dynamical (DKF) models.
+You can find some pretrained VAE models in the `pretrained_models` directory. The provided models are `A-VAE` & `AV-VAE` for non-dynamical models, and `A-DKF` & `AV-DKF` for dynamical (DKF) models, which have been trained on the [NTCD-TIMIT](https://zenodo.org/record/260228) dataset.
 
 ## Evaluation
 

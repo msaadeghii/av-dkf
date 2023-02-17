@@ -8,4 +8,4 @@ nvidia-smi
 source activate se
 
 # Run the training script
-python train_model.py ./configs/cfg_AV_VAE.ini
+python train_model.py ./configs/cfg_A_DKF.ini
