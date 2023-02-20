@@ -63,7 +63,7 @@ class EM:
     inherited.
     """
 
-    def __init__(self, X, Vf, W, H, g, vae, niter=100, device='cpu', verbose = False, fix_gain = False):
+    def __init__(self, X, Vf, W, H, g, vae, num_iter=100, device='cpu', verbose = False, fix_gain = False):
 
         self.device = device
         self.verbose = verbose
@@ -75,7 +75,7 @@ class EM:
         self.H = H # NMF activation matrix, shape (K, N)
         self.compute_Vb() # noise variance, shape (F, N)
         self.vae = vae # variational autoencoder
-        self.niter = niter # number of iterations
+        self.num_iter = num_iter # number of iterations
         self.g = g # gain parameters, shape (, N)
         self.Vs = None # speech variance, shape (R, F, N), where R corresponds
         # to different draws of the latent variables fed as input to the vae
@@ -180,7 +180,7 @@ class EM:
         s_orig = params["s_orig"] if "s_orig" in params else None
         spec_param = params["spec_param"] if "spec_param" in params else None
         sample_rate = params["sample_rate"] if "sample_rate" in params else None
-        cost = np.zeros(self.niter)
+        cost = np.zeros(self.num_iter)
         if spec_param is not None:
             if os.path.exists("temp"):
                 shutil.rmtree("temp")
@@ -189,9 +189,9 @@ class EM:
         list_cost = []
         list_score = []
         if tqdm is not None:
-            pbar = tqdm(np.arange(self.niter))
+            pbar = tqdm(np.arange(self.num_iter))
         else:
-            pbar = np.arange(self.niter)
+            pbar = np.arange(self.num_iter)
         for n in pbar:
 
             self.E_step()
@@ -268,7 +268,7 @@ class DEM:
     inherited.
     """
 
-    def __init__(self, X, Vf, W, H, g, vae, niter=100, device='cpu', verbose = False, fix_gain = False):
+    def __init__(self, X, Vf, W, H, g, vae, num_iter=100, device='cpu', verbose = False, fix_gain = False):
 
         self.device = device
         self.verbose = verbose
@@ -280,7 +280,7 @@ class DEM:
         self.H = H # NMF activation matrix, shape (K, N)
         self.compute_Vb() # noise variance, shape (F, N)
         self.vae = vae # variational autoencoder
-        self.niter = niter # number of iterations
+        self.num_iter = num_iter # number of iterations
         self.g = g # gain parameters, shape (, N)
         self.Vs = None # speech variance, shape (R, F, N), where R corresponds
         # to different draws of the latent variables fed as input to the vae
@@ -386,7 +386,7 @@ class DEM:
         s_orig = params["s_orig"] if "s_orig" in params else None
         spec_param = params["spec_param"] if "spec_param" in params else None
         sample_rate = params["sample_rate"] if "sample_rate" in params else None
-        cost = np.zeros(self.niter)
+        cost = np.zeros(self.num_iter)
         if spec_param is not None:
             if os.path.exists("temp"):
                 shutil.rmtree("temp")
@@ -397,9 +397,9 @@ class DEM:
         list_cost = []
         list_score = []
         if tqdm is not None:
-            pbar = tqdm(np.arange(self.niter))
+            pbar = tqdm(np.arange(self.num_iter))
         else:
-            pbar = np.arange(self.niter)
+            pbar = np.arange(self.num_iter)
         for n in pbar:
 
 
@@ -472,144 +472,14 @@ class DEM:
         return cost
 
 
-
-#%%
-
-class VEM(EM):
-
-    def __init__(self, X, Vf, W, H, g, vae, device, niter=100, nsamples_E_step=1,
-                 nsamples_WF=1, lr=1e-2, nepochs_E_step=10, batch_size=0, verbose = False):
-
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, niter=niter,
-             device=device)
-
-        self.verbose = verbose
-        self.nsamples_E_step = nsamples_E_step
-        self.nsamples_WF = nsamples_WF
-
-        # mixture power spectrogram as tensor, shape (F, N)
-        self.X_abs_2_t = self.np2tensor(self.X_abs_2).to(self.device)
-
-        # Define the encoder parameters as the ones to optimize during the
-        # E-step
-        self.params_to_optimize = []
-        if type(vae).__name__ == 'VAE':
-            for name in vae.named_parameters():
-                if 'encoder' in name[0]:
-                    self.params_to_optimize.append(name[1])
-                elif 'latent' in name[0]:
-                    self.params_to_optimize.append(name[1])
-        elif type(vae).__name__ == 'RVAE':
-            for name in vae.named_parameters():
-                if 'enc_' in name[0]:
-                    self.params_to_optimize.append(name[1])
-        else:
-            raise NameError('Unknown VAE type')
-
-        self.optimizer = optim.Adam(self.params_to_optimize, lr=lr) # optimizer
-
-        # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
-        self.nepochs_E_step = nepochs_E_step
-
-        self.vae.train() # vae in train mode
-
-    def sample_posterior(self, nsamples=5):
-        N = self.X.shape[1]
-
-        if hasattr(self.vae, 'latent_dim'):
-            L = self.vae.latent_dim
-        elif hasattr(self.vae, 'z_dim'):
-            L = self.vae.z_dim
-
-        Z_t = torch.zeros((N, nsamples, L))
-        with torch.no_grad():
-            for r in np.arange(nsamples):
-                 _, _, Z_t[:,r,:] = self.vae.inference(torch.t(self.X_abs_2_t), self.Vf)
-        return Z_t
-
-    def compute_Vs(self, Z):
-        """ Z: tensor of shape (N, R, L) """
-        with torch.no_grad():
-            Vs_t = self.vae.generation_x(Z, self.Vf) # (N, R, F)
-
-        if len(Vs_t.shape) == 2:
-            # shape is (N, F) but we need (N, R, F)
-            Vs_t = Vs_t.unsqueeze(1) # add a dimension in axis 1
-
-        self.Vs = np.moveaxis(self.tensor2np(Vs_t), 0, -1)
-
-    def E_step(self):
-        """
-        - update the parameters of q(z | x ), i.e. the parameters of the
-        encoder when the mixture spectrogram is fed as input
-        - sample from q(z | x)
-        - compute Vs, Vs_scaled and Vx """
-
-        # vector of gain parameters as tensor, shape (, N)
-        g_t = self.np2tensor(self.g).to(self.device)
-
-        # noise variances as tensor, shape (F, N)
-        Vb_t = self.np2tensor(self.Vb).to(self.device)
-
-        def closure():
-            # reset gradients
-            self.optimizer.zero_grad()
-
-            # forward pass in the vae with mixture spectrogram as input
-            Vs_t, mean_t, logvar_t, _ = self.vae(torch.t(self.X_abs_2_t))
-            Vs_t = torch.t(Vs_t) # tensor of shape (F, N)
-            mean_t = torch.t(mean_t) # tensor of shape (L, N)
-            logvar_t = torch.t(logvar_t) # tensor of shape (L, N)
-
-            Vx_t = g_t*Vs_t + Vb_t # likelihood variances, tensor of shape
-            # (F, N)
-
-            # compute loss, do backward and update parameters
-            loss = ( torch.sum(self.X_abs_2_t/Vx_t + torch.log(Vx_t)) -
-                    0.5*torch.sum(logvar_t - mean_t.pow(2) - logvar_t.exp()) )
-            loss.backward()
-            return loss
-
-        for epoch in np.arange(self.nepochs_E_step):
-
-            self.optimizer.step(closure)
-
-        # sample from posterior
-        Z_t = self.sample_posterior(self.nsamples_E_step) # tensor of shape
-        # (N, R, L)
-
-        # compute variances
-        self.compute_Vs(Z_t)
-        self.compute_Vs_scaled()
-        self.compute_Vx()
-
-    def compute_WF(self, sample=False):
-
-        if sample:
-            # sample from posterior
-            Z_t = self.sample_posterior(self.nsamples_WF) # tensor of shape
-            # (N, R, L)
-
-            # compute variances
-            self.compute_Vs(Z_t)
-            self.compute_Vs_scaled()
-            self.compute_Vx()
-
-        # compute Wiener Filters
-        WFs = np.mean(self.Vs_scaled/self.Vx, axis=0)
-        WFn = np.mean(self.Vb/self.Vx, axis=0)
-
-        return WFs, WFn
-
-
 #%%
 
 class PEEM(EM):
 
-    def __init__(self, X, Vf, W, H, g, Z, vae, niter, device, lr=1e-2,
-                 nepochs_E_step=10, attention = False, verbose = False):
+    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-2,
+                 num_E_step=10, attention = False, verbose = False):
 
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, niter=niter,
+        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device)
 
         self.verbose = verbose
@@ -624,7 +494,7 @@ class PEEM(EM):
         self.optimizer = optim.Adam([self.Z_t.requires_grad_()], lr=lr)
 
         # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
-        self.nepochs_E_step = nepochs_E_step
+        self.num_E_step = num_E_step
 
         self.vae.eval() # vae in eval mode
 
@@ -679,7 +549,7 @@ class PEEM(EM):
         # need to reevaluate the function multiple times, so we have to pass
         # in a closure that allows them to recompute our model. The closure
         # should clear the gradients, compute the loss, and return it.
-        for epoch in np.arange(self.nepochs_E_step):
+        for epoch in np.arange(self.num_E_step):
             self.optimizer.step(closure)
 
         # update numpy array from the new tensor
@@ -706,10 +576,10 @@ class PEEM(EM):
 
 class DPEEM(DEM):
 
-    def __init__(self, X, Vf, W, H, g, Z, vae, niter, device, lr=1e-3,
-                 nepochs_E_step=1, attention = False, verbose = False):
+    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3,
+                 num_E_step=1, attention = False, verbose = False):
 
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, niter=niter,
+        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device)
 
         self.verbose = verbose
@@ -724,7 +594,7 @@ class DPEEM(DEM):
         self.optimizer = optim.Adam([self.Z_t.requires_grad_()], lr=lr)
 
         # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
-        self.nepochs_E_step = nepochs_E_step
+        self.num_E_step = num_E_step
 
         self.vae.eval() # vae in eval mode
 
@@ -779,7 +649,7 @@ class DPEEM(DEM):
         # need to reevaluate the function multiple times, so we have to pass
         # in a closure that allows them to recompute our model. The closure
         # should clear the gradients, compute the loss, and return it.
-        for epoch in np.arange(self.nepochs_E_step):
+        for epoch in np.arange(self.num_E_step):
             self.optimizer.step(closure)
 
         # update numpy array from the new tensor
@@ -801,152 +671,12 @@ class DPEEM(DEM):
         return WFs, WFn
 
 
-class MCEM(EM):
-
-    def __init__(self, X, Vf, W, H, g, Z, vae, niter, device, nsamples_E_step=10,
-                 burnin_E_step=30, nsamples_WF=25, burnin_WF=75, var_RW=0.01, verbose = False):
-
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, niter=niter,
-             device=device)
-
-        self.verbose = verbose
-
-        if type(vae).__name__ == 'RVAE':
-            raise NameError('MCEM algorithm only valid for FFNN VAE')
-
-        self.Z = Z # Last draw of the latent variables, shape (L, N)
-        self.nsamples_E_step = nsamples_E_step
-        self.burnin_E_step = burnin_E_step
-        self.nsamples_WF = nsamples_WF
-        self.burnin_WF = burnin_WF
-        self.var_RW = var_RW
-
-        # mixture power spectrogram as tensor, shape (F, N)
-        self.X_abs_2_t = self.np2tensor(self.X_abs_2).to(self.device)
-
-        self.vae.eval() # vae in eval mode
-
-        self.zmean, self.zlogvar, _ = self.vae.zprior(self.Vf)
-        self.zmean, self.zlogvar = self.zmean.t().to(self.device), self.zlogvar.t().to(self.device)
-
-    def sample_posterior(self, Z, nsamples=10, burnin=30):
-        # Metropolis-Hastings
-
-        F, N = self.X.shape
-
-        if hasattr(self.vae, 'latent_dim'):
-            L = self.vae.latent_dim
-        elif hasattr(self.vae, 'z_dim'):
-            L = self.vae.z_dim
-
-        # random walk variance as tensor
-        var_RM_t = torch.tensor(np.float32(self.var_RW))
-
-        # latent variables sampled from the posterior
-        Z_sampled_t = torch.zeros(N, nsamples, L)
-
-        # intial latent variables as tensor, shape (L, N)
-        Z_t = self.np2tensor(Z).to(self.device)
-        # speech variances as tensor, shape (F, N)
-        Vs_t = torch.t(self.vae.generation_x(torch.t(Z_t), self.Vf)).to(self.device)
-        # vector of gain parameters as tensor, shape (, N)
-        g_t = self.np2tensor(self.g).to(self.device)
-        # noise variances as tensor, shape (F, N)
-        Vb_t = self.np2tensor(self.Vb).to(self.device)
-        # likelihood variances as tensor, shape (F, N)
-        Vx_t = g_t*Vs_t + Vb_t
-
-        cpt = 0
-        averaged_acc_rate = 0
-        for m in np.arange(nsamples+burnin):
-
-            # random walk over latent variables
-            Z_prime_t = Z_t + (torch.sqrt(var_RM_t)*torch.randn(L, N)).to(self.device)
-
-            # compute associated speech variances
-            Vs_prime_t = torch.t(self.vae.generation_x(torch.t(Z_prime_t), self.Vf)).to(self.device) # (F, N)
-            Vs_prime_scaled_t = g_t*Vs_prime_t
-            Vx_prime_t = Vs_prime_scaled_t + Vb_t
-
-            # compute log of acceptance probability
-            acc_prob = ( torch.sum(torch.log(Vx_t) - torch.log(Vx_prime_t) +
-                                   (1/Vx_t - 1/Vx_prime_t)*self.X_abs_2_t, 0) +
-                        .5*torch.sum( ((Z_t-self.zmean).pow(2) - (Z_prime_t-self.zmean).pow(2))/self.zlogvar.exp(), 0) )
-
-            # accept/reject
-            is_acc = torch.log(torch.rand(N)).to(self.device) < acc_prob
-            averaged_acc_rate += ( torch.sum(is_acc).cpu().numpy()/
-                                  np.prod(is_acc.shape)*100/(nsamples+burnin) )
-
-            Z_t[:,is_acc] = Z_prime_t[:,is_acc]
-            # update variances
-            Vs_t = torch.t(self.vae.generation_x(torch.t(Z_t), self.Vf)).to(self.device)
-            Vx_t = g_t*Vs_t + Vb_t
-
-            if m > burnin - 1:
-                Z_sampled_t[:,cpt,:] = torch.t(Z_t)
-                cpt += 1
-
-        #print('averaged acceptance rate: %f' % (averaged_acc_rate))
-
-        return Z_sampled_t
-
-
-    def compute_Vs(self, Z):
-        """ Z: tensor of shape (N, R, L) """
-
-        with torch.no_grad():
-            Vs_t = self.vae.generation_x(Z, self.Vf[:,None,:]).to(self.device) # (N, R, F)
-
-        if len(Vs_t.shape) == 2:
-            # shape is (N, F) but we need (N, R, F)
-            Vs_t = Vs_t.unsqueeze(1) # add a dimension in axis 1
-
-        self.Vs = np.moveaxis(self.tensor2np(Vs_t), 0, -1)  # (R, F, N)
-
-
-    def E_step(self):
-        """
-        """
-        # sample from posterior
-        Z_t = self.sample_posterior(self.Z, self.nsamples_E_step,
-                                    self.burnin_E_step) # (N, R, L)
-
-        # update last draw
-        self.Z = self.tensor2np(torch.squeeze(Z_t[:,-1,:])).T
-
-
-        # compute variances
-        self.compute_Vs(Z_t)
-        self.compute_Vs_scaled()
-        self.compute_Vx()
-
-    def compute_WF(self, sample=False):
-
-        if sample:
-            # sample from posterior
-            Z_t = self.sample_posterior(self.Z, self.nsamples_WF,
-                                        self.burnin_WF)
-
-            # compute variances
-            self.compute_Vs(Z_t)
-            self.compute_Vs_scaled()
-            self.compute_Vx()
-
-        WFs = np.mean(self.Vs_scaled/self.Vx, axis=0)
-        WFn = np.mean(self.Vb/self.Vx, axis=0)
-
-        return WFs, WFn
-
-
-
-
 class GPEEM(EM):
 
-    def __init__(self, X, Vf, W, H, g, Z, vae, niter, device, lr=1e-2,
-                 nepochs_E_step=10, attention = False, verbose = False):
+    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-2,
+                 num_E_step=10, attention = False, verbose = False):
 
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, niter=niter,
+        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device, fix_gain = True)
 
         self.verbose = verbose
@@ -964,7 +694,7 @@ class GPEEM(EM):
         self.optimizer = optim.Adam([self.Z_t.requires_grad_()] + [self.g_t.requires_grad_()], lr=lr)
 
         # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
-        self.nepochs_E_step = nepochs_E_step
+        self.num_E_step = num_E_step
 
         self.vae.eval() # vae in eval mode
 
@@ -1019,7 +749,7 @@ class GPEEM(EM):
         # need to reevaluate the function multiple times, so we have to pass
         # in a closure that allows them to recompute our model. The closure
         # should clear the gradients, compute the loss, and return it.
-        for epoch in np.arange(self.nepochs_E_step):
+        for epoch in np.arange(self.num_E_step):
             self.optimizer.step(closure)
             self.g_t.data = torch.clip(self.g_t.data, min=0.001)
         # update numpy array from the new tensor
@@ -1048,10 +778,10 @@ class GPEEM(EM):
 
 class GDPEEM(DEM):
 
-    def __init__(self, X, Vf, W, H, g, Z, vae, niter, device, lr=1e-3, visual = None, is_z_oracle = False, is_noise_oracle = False, fix_gain = False,
-                 nepochs_E_step=1, attention = False, verbose = False, alpha = 0.95, Z_oracle = None, rec_power = 0.99):
+    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3, visual = None, is_z_oracle = False, is_noise_oracle = False, fix_gain = False,
+                 num_E_step=1, attention = False, verbose = False, alpha = 0.95, Z_oracle = None, rec_power = 0.99):
 
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, niter=niter,
+        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device, fix_gain = True)
 
         self.verbose = verbose
@@ -1075,7 +805,7 @@ class GDPEEM(DEM):
         self.optimizer = optim.Adam([self.Z_t.requires_grad_()] + [self.g_t.requires_grad_()], lr=lr)
 
         # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
-        self.nepochs_E_step = nepochs_E_step
+        self.num_E_step = num_E_step
 
         self.vae.eval() # vae in eval mode
 
@@ -1149,8 +879,7 @@ class GDPEEM(DEM):
         # in a closure that allows them to recompute our model. The closure
         # should clear the gradients, compute the loss, and return it.
 
-        # pbar = tqdm(np.arange(self.nepochs_E_step))
-        pbar = np.arange(self.nepochs_E_step)
+        pbar = np.arange(self.num_E_step)
         for epoch in pbar:
             self.optimizer.step(closure)
 

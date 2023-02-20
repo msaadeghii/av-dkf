@@ -9,6 +9,9 @@
 import numpy as np
 import torch
 from asteroid.metrics import get_metrics
+import librosa
+import matplotlib.pyplot as plt
+import librosa.display
 
 class AudioSpecLogger(object):
     def __init__(self, STFT_dict, compute_metrics = False):
@@ -40,8 +43,8 @@ class AudioSpecLogger(object):
             this_recon_spec = recon_spec[b_ind]
             this_input_phase = input_phase[b_ind]
             
-            this_input_stft = torch.sqrt(this_input_spec.clone()) * torch.exp(1j * this_input_phase)
-            this_recon_stft = torch.sqrt(this_recon_spec.clone()) * torch.exp(1j * this_input_phase)
+            this_input_stft = torch.abs(torch.sqrt(this_input_spec.clone())) * torch.exp(1j * this_input_phase)
+            this_recon_stft = torch.abs(torch.sqrt(this_recon_spec.clone())) * torch.exp(1j * this_input_phase)
             
             this_input_wav = torch.istft(this_input_stft, n_fft=self.nfft, hop_length=self.hop, win_length=self.wlen, window=torch.from_numpy(self.win).to('cuda'),
                         center=True, normalized=False, onesided=True, length=None, return_complex=False).detach().cpu().numpy() 
@@ -66,11 +69,19 @@ class AudioSpecLogger(object):
                                  metadata=None, overwrite=True,
                                  copy_to_tmp=True, step=step)
             
-            experiment.log_image(10 * torch.log10(this_input_spec).detach().cpu().numpy().squeeze(), name=tag+'batch_{}_{}'.format(b_ind+1, 'input'), overwrite=True, image_format="png",
-                                image_scale=1.0, image_channels="last", copy_to_tmp=True, step=step)
+            Spec_in = librosa.amplitude_to_db(torch.abs(this_input_stft).detach().cpu().numpy().squeeze(), ref=np.max)            
+            Spec_re = librosa.amplitude_to_db(torch.abs(this_recon_stft).detach().cpu().numpy().squeeze(), ref=np.max)
+            
+            spec_fig_in, ax = plt.subplots(1,1)
+            img_in = librosa.display.specshow(Spec_in, y_axis='log', x_axis='time', ax= ax)
 
-            experiment.log_image(10 * torch.log10(this_recon_spec).detach().cpu().numpy().squeeze(), name=tag+'batch_{}_{}'.format(b_ind+1, 'recon'), overwrite=True, image_format="png",
-                                image_scale=1.0, image_channels="last", copy_to_tmp=True, step=step)
+            experiment.log_figure(figure=spec_fig_in, figure_name=tag+'batch_{}_{}'.format(b_ind+1, 'input'), overwrite=True, step=step)
+
+            spec_fig_re, ax = plt.subplots(1,1)
+            img_re = librosa.display.specshow(Spec_re, y_axis='log', x_axis='time', ax= ax)
+
+            experiment.log_figure(figure=spec_fig_re, figure_name=tag+'batch_{}_{}'.format(b_ind+1, 'recon'), overwrite=True, step=step)
+            
             
 def report_losses_mean_and_std(res_dic, experiment, tr_step, val_step):
     """Wrapper for cometml loss report functionality.

@@ -4,7 +4,7 @@ This repository contains the codes for the audio-visual speech enhancement (AVSE
 
 > [1] A. Golmakani, M. Sadeghi, and R. Serizel, [Audio-visual Speech Enhancement with a Deep Kalman Filter Generative Model](https://arxiv.org/abs/2211.00988), in IEEE International Conference on Acoustics Speech and Signal Processing (ICASSP), June 2023.
 
-We have largely used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to write these codes.
+We have used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to write these codes.
 
 ## Table of contents
 
@@ -19,7 +19,14 @@ We have largely used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE
   
 ## Getting started
 
-To get started with the codes, you will need to first `train` a model and then evaluate it by either `speech analysis-resynthesis` or `speech enhancement`. There are also some pre-trained models that you can use. To know different directories and main functions in this repository, please consult the following. 
+To get started with the codes, you need to clone this repository:
+
+```shell
+git clone https://github.com/msaadeghii/av-dkf.git
+cd av-dkf
+```
+
+You will also need to install some required packages. Once you're done, you can `train` a model and then evaluate it by either `speech analysis-resynthesis` or `speech enhancement`. There are also some pre-trained models that you can use. To know different directories and main functions in this repository, please consult the following. 
 
 You can monitor model training using [Comet ML](https://www.comet.com/). To set up an account and get your Comet ML `API key`, follow the instructions provided [here](https://www.comet.com/docs/v2/guides/getting-started/quickstart/). Once you get your API key, insert it in the config files loated in `configs`.
 
@@ -47,7 +54,7 @@ You can find some pretrained VAE models in the `pretrained_models` directory. Th
 
 As said earlier, you can evaluate the performance of your trained model via either `speech analysis-resynthesis` or `speech enhancement`. In the former case, the input speech is first encoded by the trained VAE encoder to get the corresponding latent codes, and then an estimate of the input speech is reconstructed in the output of the decoder using the latent codes as the input. The quality of the reconstructed speech is then compared with the input speech data. The corresponding function is the `generate` method within `dvae/learning_algo.py`. You can find the script `test_speech_analysis_resynthesis.py` useful to perform this task.
 
-The speech enhancement scripts are provided in `dvae/SE`, where `SE_algorithms.py` is for non-dynamical VAE models mainly (but it also contains codes for the DKF models), while `DSE_algorithms.py` is for Dynamical VAE models. The script `Test_SE.py` runs speech enhancement for a single test sample from the TCD-TIMIT dataset.
+The speech enhancement scripts are provided in `dvae/SE`. The script `Test_SE.py` runs speech enhancement for a single test sample from the [NTCD-TIMIT](https://zenodo.org/record/260228) dataset.
 
 The working enhancement algorithms are `peem` & `gpeem` for non-dynamical VAE models, and `dpeem` & `gdpeem` for the dynamical VAE models. All these methods are based on finding the mode of the posterior distribution in the expectation step using the Adam optimizer. Here, "g" stands for the gradient-based gain update method proposed in our paper [1].
 
@@ -69,4 +76,5 @@ You can find some good resources on the DVAE models [here](https://dynamicalvae.
 
 ## Contacts
 
-Ali Golmakani (golmakani77[at]yahoo[dot]com) and [Mostafa Sadeghi](https://msaadeghii.github.io/) (mostafa[dot]sadeghi[at]inria[dot]fr).
+- [Mostafa Sadeghi](https://msaadeghii.github.io/) (mostafa[dot]sadeghi[at]inria[dot]fr).
+- Ali Golmakani (golmakani77[at]yahoo[dot]com)

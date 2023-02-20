@@ -37,13 +37,10 @@ sys.path.append('dvae/model')
 sys.path.append('dvae/utils')
 sys.path.append('dvae/SE')
 import os
-from SE_algorithms import VEM, PEEM, DPEEM, MCEM, GDPEEM, GPEEM
-from DSE_algorithms import DVEM
+from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM
 from vae import build_VAE
 from dkf import build_DKF
 from read_config import myconf
-from scipy import signal
-import torchvision.transforms.functional as Fresize
 import matplotlib.pyplot as plt
 import cv2
 
@@ -64,47 +61,33 @@ def resample(video, target_num):
     return res
 
 class SpeechEnhancement:
-    def __init__(self, saved_model, output_dir, nmf_rank = 8,
-                 device = 'cpu', niter = 200, save_flg = False, metric = 'all', compute_scores = True, use_visual_feature_extractor = True, verbose = False, test_se = False, demo = False):
+    
+    def __init__(self, se_params):
 
-
-        #%%#######################################################################
-        # Choosing the deep generative speech model
-        ##########################################################################
-        # - 'FFNN': FFNN generative speech model
-        # - 'RNNenc-RNNdec': RNN generative speech model
-        # - 'BRNNenc-BRNNdec': BRNN generative speech model
-        ##########################################################################
-
-
-        self.saved_model = saved_model
-
-        self.save_flg = save_flg
-        self.device = device
-        self.output_dir = output_dir
-
-        self.test_se = test_se
-        self.demo = demo
-
-        #%% Parameters
-
-        self.compute_scores = compute_scores
-        self.verbose = verbose
-
-        path, fname = os.path.split(saved_model)
+        # Load SE parameters
+        self.model_path: str = se_params.get('model_path', None)
+        self.save_flg: bool = se_params.get('save_flg', False)
+        self.device: str = se_params.get('device', 'cpu')
+        self.output_dir: str = se_params.get('output_dir', None)
+        self.test_se: bool = se_params.get('test_se', False)
+        self.compute_scores: bool = se_params.get('compute_scores', False)
+        self.verbose: bool = se_params.get('verbose', False)
+        self.num_iter: int = se_params.get('num_iter', 100)
+        self.nmf_rank: int = se_params.get('nmf_rank', 8)
+        self.demo: bool = se_params.get('demo', False)
+        self.use_visual_feature_extractor: bool = se_params.get('use_visual_feature_extractor', True)
+        self.num_E_step: int = se_params.get('num_E_step', 20)
+        self.lr: float = se_params.get('lr', 5e-3)
+        
+        path, fname = os.path.split(self.model_path)
         self.config_file = os.path.join(path, 'config.ini')
         self.cfg = myconf()
         self.cfg.read(self.config_file)
 
         self.eps = np.finfo(float).eps # machine epsilon
 
-        self.niter = niter 
-        self.nmf_rank = nmf_rank
-
         self.vae_mode = self.cfg.get('Network', 'vae_mode')
         self.vae_type = self.cfg.get('Network', 'name')
-
-
 
         # Load STFT parameters
         self.wlen_sec = self.cfg.getfloat('STFT', 'wlen_sec')
@@ -118,13 +101,13 @@ class SpeechEnhancement:
         self.win = np.sin(np.arange(0.5, self.wlen+0.5) / self.wlen * np.pi)
 
         # Load Visual Feature Extractor
-        self.use_visual_feature_extractor = use_visual_feature_extractor
+        self.use_visual_feature_extractor = self.use_visual_feature_extractor
         if self.use_visual_feature_extractor:
             self.vfeats = self.build_visual_extractor()
 
 
-        #%% Load VAE
-
+        #%% Load VAE model
+        
         if self.vae_type == 'VAE':
 
             self.vae = build_VAE(cfg = self.cfg, device = self.device, vae_mode = self.vae_mode)
@@ -136,10 +119,11 @@ class SpeechEnhancement:
         else:
             raise NameError('Unknown VAE type')
 
-        self.vae.load_state_dict(torch.load(self.saved_model, map_location= self.device), strict = True)
+        self.vae.load_state_dict(torch.load(self.model_path, map_location= self.device), strict = True)
         self.vae.eval()
 
     def build_visual_extractor(self):
+        
         if self.test_se:
             config_path = "../../lipreading/data/lrw_resnet18_mstcn.json"
         elif self.demo:
@@ -176,36 +160,29 @@ class SpeechEnhancement:
 
         return vfeats
 
-    def get_specs(self, path_mix, speech_file, path_n_hat, path_s_hat):
-        y1, sr1 = librosa.load(path_mix)
-        y2, sr2 = librosa.load(speech_file)
-        y3, sr3 = librosa.load(path_n_hat)
-        y4, sr4 = librosa.load(path_s_hat)
+    def get_specs(self, mix, speech, n_hat, s_hat):
 
-
-        D1 = librosa.amplitude_to_db(np.abs(librosa.stft(y1)), ref=np.max)
-        D2 = librosa.amplitude_to_db(np.abs(librosa.stft(y2)), ref=np.max)
-        D3 = librosa.amplitude_to_db(np.abs(librosa.stft(y3)), ref=np.max)
-        D4 = librosa.amplitude_to_db(np.abs(librosa.stft(y4)), ref=np.max)
+        D1 = librosa.amplitude_to_db(np.abs(librosa.stft(mix)), ref=np.max)
+        D2 = librosa.amplitude_to_db(np.abs(librosa.stft(speech)), ref=np.max)
+        D3 = librosa.amplitude_to_db(np.abs(librosa.stft(n_hat)), ref=np.max)
+        D4 = librosa.amplitude_to_db(np.abs(librosa.stft(s_hat)), ref=np.max)
 
         spec_figure, ((ax1, ax2), (ax3, ax4)) = plt.subplots(nrows=2, ncols=2)
 
-        img1 = librosa.display.specshow(D1, y_axis='log', x_axis='time',
+        img1 = librosa.display.specshow(D1, y_axis='log', x_axis='time', sr=self.fs, ax=ax1)
+        img2 = librosa.display.specshow(D2, y_axis='log', x_axis='time', sr=self.fs, ax=ax2)
+        img3 = librosa.display.specshow(D3, y_axis='log', x_axis='time', sr=self.fs, ax=ax3)
+        img4 = librosa.display.specshow(D4, y_axis='log', x_axis='time', sr=self.fs, ax=ax4)
 
-                                       sr=sr1, ax= ax1)
-        # plt.show()
-        img2 = librosa.display.specshow(D2, y_axis='log', x_axis='time',
+        ax1.set_title('Noisy signal')
+        ax2.set_title('Speech signal')
+        ax3.set_title('Noise estimate')
+        ax4.set_title('Speech estimate')
 
-                                       sr=sr2, ax= ax2)
-        # plt.show()
-        img3 = librosa.display.specshow(D3, y_axis='log', x_axis='time',
+        spec_figure.subplots_adjust(wspace=0.4, hspace=0.4, top=0.9, bottom=0.1, left=0.1, right=0.9)
 
-                                       sr=sr3, ax= ax3)
-        # plt.show()
-        img4 = librosa.display.specshow(D4, y_axis='log', x_axis='time',
-
-                                       sr=sr4, ax= ax4)
         return spec_figure
+
 
     def run(self, input_files, tqdm=None, experience_name = None, compute_trace=False):
 
@@ -254,7 +231,6 @@ class SpeechEnhancement:
             ########################### upsample video ############################
             v = resample(v_orig, target_num = N_aframes)
 
-            # print(v.shape)
             v = v.reshape([67,67, 1, -1])
             data_orig_v = torch.from_numpy(v.astype(np.float32)).to(self.device)
         else:
@@ -283,19 +259,18 @@ class SpeechEnhancement:
         stft_param = {"hop": self.hop, "wlen": self.wlen, "win": self.win, "len": T_orig}
 
 
-        if "peem" in algo_type or "fast" in algo_type or "mcem" in algo_type:
+        # Initialize latent variables
+        with torch.no_grad():
+            X_abs_2 = X_abs_2.T
+            X_abs_2 = torch.from_numpy(X_abs_2.astype(np.float32))
+            X_abs_2 = X_abs_2.to(self.device)
+            if self.vae_type == 'DKF':
+                _,Z_init, _ = self.vae.inference(X_abs_2.unsqueeze(0).permute(1, 0, -1), data_orig_v.unsqueeze(0).permute(-1,0,1)) # corresponds to the encoder mean
 
-            # Compute the first latent variable sample
-            with torch.no_grad():
-                X_abs_2 = X_abs_2.T
-                X_abs_2 = torch.from_numpy(X_abs_2.astype(np.float32))
-                X_abs_2 = X_abs_2.to(self.device)
-                if self.vae_type == 'DKF':
-                    _,Z_init, _ = self.vae.inference(X_abs_2.unsqueeze(0).permute(1, 0, -1), data_orig_v.unsqueeze(0).permute(-1,0,1)) # corresponds to the encoder mean
-
-                elif self.vae_type == 'VAE':
-                    _,Z_init, _ = self.vae.inference(X_abs_2, data_orig_v.permute(1,0))
-                Z_init = Z_init.cpu().numpy().T
+            elif self.vae_type == 'VAE':
+                _,Z_init, _ = self.vae.inference(X_abs_2, data_orig_v.permute(1,0))
+                
+            Z_init = Z_init.cpu().numpy().T
 
 
         #%% Initialize noise model parameters
@@ -304,109 +279,32 @@ class SpeechEnhancement:
         np.random.seed(23)
         H_init = np.maximum(np.random.rand(self.nmf_rank, N), self.eps)
 
+        # Initialize the gain vector
         g_init = np.ones(N)
 
-        #%% Define speech enhancement algorithm
-        #%%#######################################################################
-        # Choosing the speech enhancement algorithm
-        ##########################################################################
-        # - 'mcem': Monte Carlo EM (only valid for FFNN generative speech model)
-        # - 'vem': Variational EM with fine-tune encoder (valid for all models)
-        # - 'peem': Point-estimate EM (valid for all models)
-        ##########################################################################
 
-        if algo_type == 'mcem':
-
-            print('MCEM')
-
-            nsamples_E_step = 10
-            nsamples_WF = 25
-            burnin_E_step = 30
-            burnin_WF = 75
-            var_RW = 0.01
-
-            algo = MCEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
-                        device=self.device, niter=self.niter, nsamples_E_step=nsamples_E_step,
-                        burnin_E_step=burnin_E_step, nsamples_WF=nsamples_WF,
-                        burnin_WF=burnin_WF, var_RW=var_RW, verbose = self.verbose)
-
-        elif algo_type == 'vem':
-
-            print('VEM')
-
-            nsamples_E_step = 1
-            nsamples_WF = 1
-            lr = 1e-2
-
-            if self.vae_type == 'VAE':
-                nepochs_E_step = 10 # IMPORTANT PARAMETER: If 1 epoch, bad results
-            else:
-                nepochs_E_step = 1
-
-            algo = VEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, vae=self.vae, device=self.device,
-                       niter=self.niter, nsamples_E_step=nsamples_E_step,
-                       nsamples_WF=nsamples_WF, lr=lr,
-                       nepochs_E_step=nepochs_E_step, verbose = self.verbose)
-
-        elif algo_type == 'dvem':
-
-            print('DVEM')
-
-            nsamples_E_step = 1
-            nsamples_WF = 1
-            lr = 1e-3
-            nepochs_E_step = 20
-
-            algo = DVEM(X=X, Vf = v.transpose(), W=W_init, H=H_init, g=g_init, dvae = self.vae, dvae_type = 'DKF',
-                          niter=self.niter, lr=lr, nepochs_E_step=nepochs_E_step,
-                          nsamples_WF=nsamples_WF, device=self.device)
-
-        elif algo_type == 'peem':
-
-            print('PEEM')
-
-            lr = 1e-2
-
-            nepochs_E_step = 20
+        if algo_type == 'peem':
 
             algo = PEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
-                        device=self.device, niter=self.niter, lr=lr,
-                        nepochs_E_step=nepochs_E_step, verbose = self.verbose)
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, verbose = self.verbose)
 
         elif algo_type == 'gpeem':
 
-            print('PEEM')
-
-            lr = 1e-2
-
-            nepochs_E_step = 20
-
             algo = GPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
-                        device=self.device, niter=self.niter, lr=lr,
-                        nepochs_E_step=nepochs_E_step, attention = attention, verbose = self.verbose)
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, attention = attention, verbose = self.verbose)
 
         elif algo_type == 'dpeem':
 
-            print('DPEEM')
-
-            lr = 3e-3
-
-            nepochs_E_step = 20
-
             algo = DPEEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
-                        device=self.device, niter=self.niter, lr=lr,
-                        nepochs_E_step=nepochs_E_step, attention = attention, verbose = self.verbose)
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, attention = attention, verbose = self.verbose)
         elif algo_type == 'gdpeem':
 
-            print('GDPEEM')
-
-            lr = 3e-3
-
-            nepochs_E_step = 20
-
             algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
-                        device=self.device, niter=self.niter, lr=lr,
-                        nepochs_E_step=nepochs_E_step, attention = attention, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, attention = attention, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)
 
 
         else:
@@ -439,17 +337,13 @@ class SpeechEnhancement:
                               win_length=self.wlen, window=self.win, length=T_orig)
 
 
-
-        metrics_dict = get_metrics(mix = x, clean = s_orig, estimate = s_hat, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
-        
-        input_scores = [metrics_dict['input_si_sdr'], metrics_dict['input_pesq'], metrics_dict['input_stoi']]
-
-
         #%% Evaluation
-        
+        input_scores = []
         output_scores = []
         
         if self.compute_scores:
+            metrics_dict = get_metrics(mix = x, clean = s_orig, estimate = s_hat, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
+            input_scores = [metrics_dict['input_si_sdr'], metrics_dict['input_pesq'], metrics_dict['input_stoi']]
             info = {"input_scores": input_scores}
             list_score = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi'], info]
             output_scores = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi']]
@@ -466,7 +360,12 @@ class SpeechEnhancement:
                         input_scores = input_scores)
 
         spec_figure = None
+        
         if self.save_flg:
+            path_s_hat = os.path.join(save_dir, mix_name[:-4]+f'_speech_est_{algo_type}_{self.experience_name}' +'.wav')
+            path_n_hat = os.path.join(save_dir,mix_name[:-4]+f'_noise_est_{algo_type}_{self.experience_name}' +'.wav')
+            path_mix = os.path.join(save_dir,mix_name[:-4]+'_mix_norm.wav')
+            
             out_path = os.path.join(save_dir,mix_name[:-4]+'_video.avi')
             out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'DIVX'), fps,(67,67))
             for idx in tqdm(range(data_v_to_save.shape[0])):
@@ -474,13 +373,13 @@ class SpeechEnhancement:
                 out.write(frame)
             out.release()
             cv2.destroyAllWindows()
-            path_s_hat = os.path.join(save_dir, mix_name[:-4]+f'_speech_est_{algo_type}_{self.experience_name}' +'.wav')
+
             sf.write(path_s_hat, s_hat, self.fs)
-            path_n_hat = os.path.join(save_dir,mix_name[:-4]+f'_noise_est_{algo_type}_{self.experience_name}' +'.wav')
             sf.write(path_n_hat, n_hat, self.fs)
-            path_mix = os.path.join(save_dir,mix_name[:-4]+'_mix_norm.wav')
             sf.write(path_mix, x, self.fs)
-            spec_figure = self.get_specs(path_mix, speech_file, path_n_hat, path_s_hat)
+
+        if self.demo:
+            spec_figure = self.get_specs(x, s_orig, n_hat, s_hat)
 
         info = {
             "spec_figure": spec_figure,
