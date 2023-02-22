@@ -224,15 +224,12 @@ class EM:
                     img1 = librosa.display.specshow(D1, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax1)
-                    # plt.show()
                     img2 = librosa.display.specshow(D2, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax2)
-                    # plt.show()
                     img3 = librosa.display.specshow(D3, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax3)
-                    # plt.show()
                     img4 = librosa.display.specshow(D4, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax4)
@@ -244,7 +241,6 @@ class EM:
 
                     spec_figure.savefig('temp/frame' + '%03d'%(n) + '.png')
                     plt.close(spec_figure)
-                    # mozz
 
                 if tqdm is not None:
                     pbar.set_postfix({'sdr': score_sisdr, 'cost': cost[n]})
@@ -433,15 +429,12 @@ class DEM:
                     img1 = librosa.display.specshow(D1, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax1)
-                    # plt.show()
                     img2 = librosa.display.specshow(D2, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax2)
-                    # plt.show()
                     img3 = librosa.display.specshow(D3, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax3)
-                    # plt.show()
                     img4 = librosa.display.specshow(D4, y_axis='log', x_axis='time',
 
                                                    sr=sample_rate, ax= ax4)
@@ -453,7 +446,6 @@ class DEM:
 
                     spec_figure.savefig('temp/frame' + '%03d'%(n) + '.png')
                     plt.close(spec_figure)
-                    # mozz
 
                 if tqdm is not None:
                     pbar.set_postfix({'sdr': score_sisdr, 'cost': cost[n]})
@@ -472,12 +464,10 @@ class DEM:
         return cost
 
 
-#%%
-
 class PEEM(EM):
 
     def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-2,
-                 num_E_step=10, attention = False, verbose = False):
+                 num_E_step=10, verbose = False):
 
         super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device)
@@ -500,29 +490,15 @@ class PEEM(EM):
 
         self.zmean = torch.tensor([0.0]).to(self.device)
         self.zlogvar = torch.tensor([0.0]).to(self.device)
-        self.attention = attention
 
     def compute_Vs(self, Z):
         """ Z: tensor of shape (N, L) """
-        if self.attention:
-            context, _ = self.vae.attention(torch.t(Z), self.Vf)
-            v_ = context
-        else:
-            v_ = self.Vf
 
-        Vs_t= self.vae.generation_x(torch.t(Z), v_) # (F, N)
+        Vs_t= self.vae.generation_x(torch.t(Z), self.Vf) # (F, N)
         Vs_t = Vs_t.t()
         self.Vs = self.tensor2np(Vs_t.detach())
 
         return Vs_t
-
-    def loss_function(self, V_x, X_abs_2_tensor, z):
-
-        neg_likelihood = torch.sum( torch.log(V_x) + X_abs_2_tensor / V_x )
-
-        neg_prior = torch.sum((z-self.zmean).pow(2)/self.zlogvar.exp())
-
-        return neg_likelihood + neg_prior
 
     def E_step(self):
         """ """
@@ -559,9 +535,6 @@ class PEEM(EM):
         self.compute_Vs(self.Z_t)
         self.compute_Vs_scaled()
         self.compute_Vx()
-        list_t = [self.Vx,self.Vs,self.Vs_scaled,self.X_abs_2,self.H,self.W]
-
-
 
     def compute_WF(self, sample=False):
         # sample parameter useless
@@ -577,7 +550,7 @@ class PEEM(EM):
 class DPEEM(DEM):
 
     def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3,
-                 num_E_step=1, attention = False, verbose = False):
+                 num_E_step=1, verbose = False):
 
         super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device)
@@ -598,18 +571,10 @@ class DPEEM(DEM):
 
         self.vae.eval() # vae in eval mode
 
-
-        self.attention = attention
-
     def compute_Vs(self, Z):
         """ Z: tensor of shape (N, L) """
-        if self.attention:
-            context, _ = self.vae.attention(Z, self.Vf)
-            v_ = context
-        else:
-            v_ = self.Vf
-        
-        Vs_t= self.vae.generation_x(Z.permute(-1,1,0), v_.unsqueeze(0).permute(-1, 0, 1)).permute(-1,1,0) # (F, 1 ,N)
+
+        Vs_t= self.vae.generation_x(Z.permute(-1,1,0), self.Vf.unsqueeze(0).permute(-1, 0, 1)).permute(-1,1,0) # (F, 1 ,N)
 
         self.Vs = self.tensor2np(Vs_t.detach())
 
@@ -661,7 +626,6 @@ class DPEEM(DEM):
         self.compute_Vx()
 
     def compute_WF(self, sample=False):
-        # sample parameter useless
 
         # compute Wiener Filters
         self.Vx_transpose = np.transpose(self.Vx, (1,0,-1))
@@ -674,7 +638,7 @@ class DPEEM(DEM):
 class GPEEM(EM):
 
     def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-2,
-                 num_E_step=10, attention = False, verbose = False):
+                 num_E_step=10, verbose = False):
 
         super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device, fix_gain = True)
@@ -700,30 +664,16 @@ class GPEEM(EM):
 
         self.zmean = torch.tensor([0.0]).to(self.device)
         self.zlogvar = torch.tensor([0.0]).to(self.device)
-        self.attention = attention
         self.Z_old = self.Z_t
 
     def compute_Vs(self, Z):
         """ Z: tensor of shape (N, L) """
-        if self.attention:
-            context, _ = self.vae.attention(torch.t(Z), self.Vf)
-            v_ = context
-        else:
-            v_ = self.Vf
 
-        Vs_t= self.vae.generation_x(torch.t(Z), v_) # (F, N)
+        Vs_t= self.vae.generation_x(torch.t(Z), self.Vf) # (F, N)
         Vs_t = Vs_t.t()
         self.Vs = self.tensor2np(Vs_t.detach())
 
         return Vs_t
-
-    def loss_function(self, V_x, X_abs_2_tensor, z):
-
-        neg_likelihood = torch.sum( torch.log(V_x) + X_abs_2_tensor / V_x )
-
-        neg_prior = torch.sum((z-self.zmean).pow(2)/self.zlogvar.exp())
-
-        return neg_likelihood + neg_prior
 
     def E_step(self):
         """ """
@@ -752,6 +702,7 @@ class GPEEM(EM):
         for epoch in np.arange(self.num_E_step):
             self.optimizer.step(closure)
             self.g_t.data = torch.clip(self.g_t.data, min=0.001)
+            
         # update numpy array from the new tensor
         self.Z = self.tensor2np(self.Z_t.detach())
 
@@ -759,14 +710,12 @@ class GPEEM(EM):
         self.compute_Vs(self.Z_t)
         self.compute_Vs_scaled()
         self.compute_Vx()
-        list_t = [self.Vx,self.Vs,self.Vs_scaled,self.X_abs_2,self.H,self.W]
 
         self.Z_old = self.Z_t.clone()
         self.g = self.tensor2np(self.g_t.detach())
 
 
     def compute_WF(self, sample=False):
-        # sample parameter useless
 
         # compute Wiener Filters
         WFs = self.Vs_scaled/self.Vx
@@ -775,11 +724,10 @@ class GPEEM(EM):
         return WFs, WFn
 
 
-
 class GDPEEM(DEM):
 
     def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3, visual = None, is_z_oracle = False, is_noise_oracle = False, fix_gain = False,
-                 num_E_step=1, attention = False, verbose = False, alpha = 0.95, Z_oracle = None, rec_power = 0.99):
+                 num_E_step=1, verbose = False, alpha = 0.95, Z_oracle = None, rec_power = 0.99):
 
         super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device, fix_gain = True)
@@ -796,8 +744,6 @@ class GDPEEM(DEM):
             self.Z_oracle = Z_oracle # shape (L, N)
             self.Z_oracle_t = self.np2tensor(self.Z_oracle).to(self.device)
 
-
-
         self.visual = visual
 
         self.z_dim = Z.shape[0]
@@ -811,22 +757,13 @@ class GDPEEM(DEM):
 
         self.is_z_oracle = is_z_oracle
         self.is_noise_oracle = is_noise_oracle
-        self.attention = attention
         self.a = 1.1
         self.b = 1.1
 
         self.rec_power = rec_power
 
-        self.iter_refresh = 0
-
-
     def compute_Vs(self, Z):
         """ Z: tensor of shape (N, L) """
-        if self.attention:
-            context, _ = self.vae.attention(Z, self.Vf)
-            v_ = context
-        else:
-            v_ = self.Vf
 
         Vs_t= self.vae.generation_x(Z.permute(-1,1,0), self.visual).permute(-1,1,0) # (F, 1 ,N)
 
@@ -893,26 +830,13 @@ class GDPEEM(DEM):
         self.S_hat = WFs*self.X
         last_s_hat = self.npc2tensor(self.S_hat.transpose()).unsqueeze(1).to(self.device)
 
-
-        self.iter_refresh += 1
-        if self.iter_refresh % 10 == 0 and False:
-            _, self.z_mean_p, self.z_logvar_p = self.vae.inference(self.X_abs_2_t.permute((-1,1,0)), self.v_tcn, vmask = False, amask = False)
-            self.z_mean_p = self.z_mean_p.detach().permute(-1,1,0)
-            self.z_logvar_p = self.z_logvar_p.detach().permute(-1,1,0)
-
-            _, self.Z_t_toc, _ = self.vae.inference(last_s_hat, self.v_tcn, vmask = False, amask = False, inf_mask = True)
-
-            self.Z_t.data = self.Z_t_toc.permute(-1, 1, 0).clone().data
-            print("I did it")
         # update numpy array from the new tensor
         self.Z = self.tensor2np(self.Z_t.detach())
 
         self.g_t.data = torch.clip(self.g_t, min = 0.001)
         self.g = self.tensor2np(self.g_t.detach())
 
-
     def compute_WF(self, sample=False):
-        # sample parameter useless
 
         # compute Wiener Filters
         self.Vx_transpose = np.transpose(self.Vx, (1,0,-1))

@@ -76,16 +76,17 @@ class AudioSpecLogger(object):
             img_in = librosa.display.specshow(Spec_in, y_axis='log', x_axis='time', ax= ax)
 
             experiment.log_figure(figure=spec_fig_in, figure_name=tag+'batch_{}_{}'.format(b_ind+1, 'input'), overwrite=True, step=step)
-
+            plt.close(spec_fig_in)
+            
             spec_fig_re, ax = plt.subplots(1,1)
             img_re = librosa.display.specshow(Spec_re, y_axis='log', x_axis='time', ax= ax)
 
             experiment.log_figure(figure=spec_fig_re, figure_name=tag+'batch_{}_{}'.format(b_ind+1, 'recon'), overwrite=True, step=step)
+            plt.close(spec_fig_re)
             
-            
-def report_losses_mean_and_std(res_dic, experiment, tr_step, val_step):
-    """Wrapper for cometml loss report functionality.
-    Reports the mean and the std of each loss by inferring the train and the
+def report_se_metrics(res_dic, experiment, tr_step, val_step):
+    """Wrapper for cometml metrics report functionality.
+    Reports the mean and the std of each metric by inferring the train and the
     val string and it assigns it accordingly.
     Args:
         losses_dict: Python Dict with the following structure:
@@ -97,23 +98,22 @@ def report_losses_mean_and_std(res_dic, experiment, tr_step, val_step):
         The updated losses_dict with the current mean and std
     """
 
-    for d_name in res_dic:
-        for l_name in res_dic[d_name]:
-            values = res_dic[d_name][l_name]['acc']
-            mean_metric = np.mean(values)
-            median_metric = np.median(values)
-            std_metric = np.std(values)
+    for l_name in res_dic:
+        values = res_dic[l_name]['acc']
+        mean_metric = np.mean(values)
+        median_metric = np.median(values)
+        std_metric = np.std(values)
 
-            with experiment.validate():
-                experiment.log_metric(
-                    f'{d_name}_{l_name}_mean', mean_metric, step=val_step)
-                experiment.log_metric(
-                    f'{d_name}_{l_name}_median', median_metric, step=val_step)
-                experiment.log_metric(
-                    f'{d_name}_{l_name}_std', std_metric, step=val_step)
+        with experiment.validate():
+            experiment.log_metric(
+                f'{l_name}_mean', mean_metric, step=val_step)
+            experiment.log_metric(
+                f'{l_name}_median', median_metric, step=val_step)
+            experiment.log_metric(
+                f'{l_name}_std', std_metric, step=val_step)
 
-            res_dic[d_name][l_name]['mean'] = mean_metric
-            res_dic[d_name][l_name]['median'] = median_metric
-            res_dic[d_name][l_name]['std'] = std_metric
+        res_dic[l_name]['mean'] = mean_metric
+        res_dic[l_name]['median'] = median_metric
+        res_dic[l_name]['std'] = std_metric
 
     return res_dic

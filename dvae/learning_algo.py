@@ -11,12 +11,14 @@ The main python file for model training, data test and performance evaluation, s
 """
 
 from comet_ml import Experiment
+import pyloudnorm as pyln
+from dvae.SE.speech_enhancement import SpeechEnhancement
+from multiprocessing import Pool
 
 import os
 import shutil
 import socket
 import datetime
-import pickle
 import numpy as np
 import torch
 import librosa
@@ -38,6 +40,17 @@ from lipreading.model import Lipreading
 
 import configparser
 from pprint import pprint
+
+import pickle
+
+def save_dict(di_, filename_):
+    with open(filename_, 'wb') as f:
+        pickle.dump(di_, f)
+
+def load_dict(filename_):
+    with open(filename_, 'rb') as f:
+        ret_di = pickle.load(f)
+    return ret_di
 
 class IterMeter(object):
     """keeps track of total iterations"""
@@ -148,6 +161,100 @@ def extract_frames(x, v_orig, STFT_dict, trim=True, extract_visual_features = Tr
 
     return X, v_up, T_orig
 
+class SE_Eval():
+    """
+    Class for evaluating the speech enhancement performance of a model during training.
+    """
+    
+    def __init__(self, data_dir, demand_noise_dir, save_dir_eval,
+                device = 'cuda', nmf_rank = 8, num_iter = 10, num_E_step = 5, algo_type = "gdpeem"):
+        
+        self.speech_dir = os.path.join(data_dir, 'val_data_NTCD')
+        self.speakers_id = ['06M', '17F', '20M', '35M', '38F', '42M', '52M', '59F']
+        self.noise_types = ['NPARK',  'DWASHING',  'PSTATION', 'TMETRO', 'DKITCHEN']
+        self.SNRs = [0,5,10] 
+        self.demand_noise_dir = demand_noise_dir
+        self.save_dir_eval = save_dir_eval
+        self.algo_type = algo_type
+        
+        # SE parameters
+        self.se_params = {'model_path':None,
+                      'device':device,
+                      'nmf_rank':nmf_rank,
+                      'num_iter':num_iter,
+                      'num_E_step':num_E_step,
+                      'use_visual_feature_extractor': False}
+
+        if not os.path.isdir(self.save_dir_eval):
+            os.makedirs(self.save_dir_eval)
+            self.build_eval_data()
+    
+    def build_eval_data(self):
+        
+        fs = 16000
+        meter = pyln.Meter(fs) # create BS.1770 meter
+
+        speech_file_list = []
+        for speaker_id in self.speakers_id:
+            speech_file_list.append(os.path.join(self.speech_dir, speaker_id, 'sa1.wav'))
+            
+        cnt = 0
+        
+        for speech_file in speech_file_list:
+
+            this_clean_wav, fs = sf.read(speech_file) 
+            utt_len = len(this_clean_wav)
+            path0, file_name = os.path.split(speech_file)
+            path1, speaker_id = os.path.split(path0)
+
+            video_file = os.path.join(self.speech_dir, speaker_id, file_name[:-4]+'RawVF.npy')
+            video_raw = np.load(video_file)  # video
+            
+            for noise_type in self.noise_types:
+
+                for target_snr in self.SNRs:
+
+                    noise_file = os.path.join(self.demand_noise_dir, noise_type, 'ch01.wav')
+                    this_noise_wav, fs = sf.read(noise_file)
+                    noise_start = np.random.randint(0, len(this_noise_wav) - utt_len - 1)
+                    this_noise_wav = this_noise_wav[noise_start:noise_start+utt_len]
+
+                    s_loudness = meter.integrated_loudness(this_clean_wav)
+                    n_loudness = meter.integrated_loudness(this_noise_wav)
+
+                    input_snr = s_loudness - n_loudness
+                    scale_factor = 10**( (input_snr - target_snr)/20 )
+                    this_noise_wav = this_noise_wav*scale_factor
+                    
+                    eval_file_dic = {}
+                    eval_file_dic = {'speech_wav': this_clean_wav,
+                                     'noise_wav': this_noise_wav,
+                                     'noise_type': noise_type,
+                                     'video_raw': video_raw,
+                                     'snr': target_snr}
+                    
+                    save_dict(eval_file_dic, os.path.join(self.save_dir_eval, 'eval_idx_' + str(cnt) + '_noise_' + noise_type + '_snr_' + str(target_snr) + '.pkl'))
+                    
+                    cnt += 1   
+                    
+    def setup_se(self, model_path):
+        
+        self.se_params['model_path'] = model_path
+        self.se = SpeechEnhancement(self.se_params)
+        
+    def run_se(self, input_data_path):
+        
+        input_data = load_dict(os.path.join(self.save_dir_eval, input_data_path))
+        speech_wav = input_data['speech_wav']
+        noise_wav = input_data['noise_wav']
+        video_raw = input_data['video_raw']
+        mix_wav = speech_wav + noise_wav
+        
+        # Run SE & evaluations
+        info = self.se.run([mix_wav, speech_wav, video_raw, self.algo_type])
+        
+        return info
+        
 class LearningAlgorithm():
 
     """
@@ -158,7 +265,7 @@ class LearningAlgorithm():
     """
 
     def __init__(self, config_file='config_default.ini', use_visual_feature_extractor = True):
-
+        
         # Load config parser
         self.config_file = config_file
         if not os.path.isfile(self.config_file):
@@ -182,7 +289,7 @@ class LearningAlgorithm():
 
         self.dataset_name = self.cfg.get('DataFrame', 'dataset_name')
         self.overlap = self.cfg.getfloat('DataFrame', 'overlap', fallback = self.default_params['overlap'])
-
+        self.demand_noise_dir = self.cfg.get('User', 'demand_noise_dir')
 
         self.use_visual_feature_extractor = use_visual_feature_extractor
 
@@ -250,7 +357,7 @@ class LearningAlgorithm():
         shuffle_file_list = self.cfg.get('DataFrame', 'shuffle_file_list', fallback = self.default_params['shuffle_file_list'])
         shuffle_samples_in_batch = self.cfg.get('DataFrame', 'shuffle_samples_in_batch', fallback = self.default_params['shuffle_samples_in_batch'])
         data_dir = self.cfg.get('User', 'data_dir')
-
+        
         train_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'train_data_NTCD')) for name in files if name.endswith('.wav')]
 
         val_file_list = [os.path.join(root, name) for root, dirs, files in os.walk(os.path.join(data_dir, 'val_data_NTCD')) for name in files if name.endswith('.wav')]
@@ -366,11 +473,18 @@ class LearningAlgorithm():
         path = self.train_normal(logger, save_dir, train_dataloader, val_dataloader, train_num, val_num)
         
         return path
-
-
+        
     def train_normal(self, logger, save_dir, train_dataloader, val_dataloader, train_num, val_num):
 
-        iter_meter = IterMeter()
+        # Setup val data for SE validation
+        fs = self.cfg.getint('STFT', 'fs')
+        data_dir = self.cfg.get('User', 'data_dir')
+        demand_noise_dir = self.cfg.get('User', 'demand_noise_dir')
+        save_dir_eval = os.path.join(data_dir, 'val_se')
+        val_se_file_list = [f for f in os.listdir(save_dir_eval) if f.endswith('.pkl')]
+        self.se_eval = SE_Eval(data_dir = data_dir,
+                               demand_noise_dir = demand_noise_dir,
+                               save_dir_eval = save_dir_eval)
         
         # Load training parameters
         epochs = self.cfg.getint('Training', 'epochs')
@@ -385,7 +499,9 @@ class LearningAlgorithm():
                 checkpoint = checkpoint['model_state_dict']
             print("Loading Model ...")
             self.model.load_state_dict(checkpoint, strict=False)
-
+        
+        # Setup Comet ML log
+        iter_meter = IterMeter()
         experiment = Experiment(self.api_key, project_name=self.hparams['User']['project_name'])
         experiment.log_parameters(self.hparams)
         experiment_name = '_'.join(self.hparams['User']['cometml_tags'].split(","))
@@ -412,9 +528,16 @@ class LearningAlgorithm():
         # Define optimizer (might use different training schedule)
         optimizer = self.optimizer
 
+        # SE metrics ("i": improvement with respect to input)
+        metrics_names = ['si_sdr_i', 'pesq_i', 'stoi_i'] 
+        
         # Train with mini-batch SGD
         for epoch in range(epochs):
 
+            res_dic = {}
+            for metric_name in metrics_names:
+                res_dic[metric_name] = {'mean': 0., 'median': 0., 'std': 0., 'acc': []}
+                
             start_time = datetime.datetime.now()
     
             # Batch training
@@ -434,7 +557,7 @@ class LearningAlgorithm():
                 train_recon[epoch] += loss_recon.item()
                 train_KLD[epoch] += loss_KLD.item()
         
-            # Validation
+            # Validation - reconstruction loss
             for batch_idx, (batch_a, batch_v, batch_phase) in tqdm(enumerate(val_dataloader)):
 
                 batch_a, batch_v = batch_a.to(self.device), batch_v.to(self.device)
@@ -463,6 +586,46 @@ class LearningAlgorithm():
             val_recon[epoch] = val_recon[epoch] / val_num
             val_KLD[epoch] = val_KLD[epoch] / val_num
 
+            # Early stop patiance
+            if early_stop_patience > 0:
+            
+                if val_loss[epoch] < best_val_loss:
+                    best_val_loss = val_loss[epoch]
+                    cpt_patience = 0
+                    best_state_dict = self.model.state_dict()
+                    cur_best_epoch = epoch
+                else:
+                    cpt_patience += 1
+
+                # Stop traning if early-stop triggers
+                if cpt_patience == early_stop_patience:
+                    logger.info('Early stop patience achieved')
+                    print('Early stopping occured ...')
+                    break
+
+
+            # Save model parameters regularly
+            if epoch % save_frequency == 0:
+                save_file = os.path.join(save_dir, self.model_name + '-' + self.vae_mode + '_epoch' + str(epoch) + '.pt')
+                torch.save(self.model.state_dict(), save_file)
+                
+                # Validation - speech enhancement metrics
+                self.se_eval.setup_se(save_file)                                
+                for idx_eval, this_wav_path in tqdm(enumerate(val_se_file_list)):
+                    info_out = self.se_eval.run_se(this_wav_path)
+                    # Compute scores
+                    metrics_dict = get_metrics(mix = info_out['noisy_wave'], clean = info_out['clean_wave'], estimate = info_out['enh_wave'],
+                                               sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
+
+                    input_scores = [metrics_dict['input_si_sdr'], metrics_dict['input_pesq'], metrics_dict['input_stoi']]
+                    output_scores = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi']]
+
+                    res_dic['si_sdr_i']['acc'].append(output_scores[0] - input_scores[0])
+                    res_dic['pesq_i']['acc'].append(output_scores[1] - input_scores[1])
+                    res_dic['stoi_i']['acc'].append(output_scores[2] - input_scores[2])
+
+                res_dic = cometml_logger.report_se_metrics(res_dic, experiment, iter_meter.get(), iter_meter.get())  
+            
             experiment.log_metric('train/recon', train_recon[epoch], step=iter_meter.get())
             experiment.log_metric('train/KLD', train_KLD[epoch], step=iter_meter.get())
             experiment.log_metric('train/total', train_loss[epoch], step=iter_meter.get())
@@ -473,15 +636,6 @@ class LearningAlgorithm():
             
             iter_meter.step()
             
-            # Early stop patiance
-            if val_loss[epoch] < best_val_loss:
-                best_val_loss = val_loss[epoch]
-                cpt_patience = 0
-                best_state_dict = self.model.state_dict()
-                cur_best_epoch = epoch
-            else:
-                cpt_patience += 1
-
             # Training time
             end_time = datetime.datetime.now()
             interval = (end_time - start_time).seconds / 60
@@ -489,16 +643,6 @@ class LearningAlgorithm():
             logger.info(log_message)
             print(log_message)
 
-            # Stop traning if early-stop triggers
-            if cpt_patience == early_stop_patience:
-                logger.info('Early stop patience achieved')
-                print('Early stopping occured ...')
-                break
-
-            # Save model parameters regularly
-            if epoch % save_frequency == 0:
-                save_file = os.path.join(save_dir, self.model_name + '-' + self.vae_mode + '_epoch' + str(cur_best_epoch) + '.pt')
-                torch.save(self.model.state_dict(), save_file)
         
         # Save the final weights of network with the best validation loss
         train_loss = train_loss[:epoch+1]
@@ -507,7 +651,7 @@ class LearningAlgorithm():
         train_KLD = train_KLD[:epoch+1]
         val_recon = val_recon[:epoch+1]
         val_KLD = val_KLD[:epoch+1]
-        save_file = os.path.join(save_dir, self.model_name + '-' + self.vae_mode + '_final_epoch' + str(cur_best_epoch) + '.pt')
+        save_file = os.path.join(save_dir, self.model_name + '-' + self.vae_mode + '_final_epoch' + str(epoch) + '.pt')
         torch.save(best_state_dict, save_file)
 
         # Save the training loss and validation loss

@@ -120,6 +120,7 @@ class SpeechEnhancement:
             raise NameError('Unknown VAE type')
 
         self.vae.load_state_dict(torch.load(self.model_path, map_location= self.device), strict = True)
+            
         self.vae.eval()
 
     def build_visual_extractor(self):
@@ -195,9 +196,13 @@ class SpeechEnhancement:
 
         mix_file, speech_file, video_file, algo_type = input_files
 
-        s_orig, fs = sf.read(speech_file) # clean speech
-        x, fx = sf.read(mix_file)    # mixture speech
-
+        if isinstance(mix_file, str):
+            s_orig, fs = sf.read(speech_file) # clean speech
+            x, fx = sf.read(mix_file)    # mixture speech
+            v_orig = np.load(video_file)  # video
+        else:
+            x, s_orig, v_orig, algo_type = input_files
+            fs = 16000
 
         s_orig = s_orig/np.max(s_orig)
         x = x/np.max(x)
@@ -220,9 +225,6 @@ class SpeechEnhancement:
 
         ########################### upsample video ############################
 
-
-        v_orig = np.load(video_file)  # video
-
         if not self.use_visual_feature_extractor:
 
             F, N = X.shape
@@ -231,7 +233,6 @@ class SpeechEnhancement:
             ########################### upsample video ############################
             v = resample(v_orig, target_num = N_aframes)
 
-            v = v.reshape([67,67, 1, -1])
             data_orig_v = torch.from_numpy(v.astype(np.float32)).to(self.device)
         else:
             N_vframes = v_orig.shape[1]
@@ -252,9 +253,6 @@ class SpeechEnhancement:
             data_v = torch.from_numpy(data_v).permute(1,-1,0,2,3).to(self.device).type(this_dtype)
             v = self.vfeats(data_v, lengths=None)[0,...].detach().cpu().numpy()
             data_orig_v = torch.from_numpy(v.astype(np.float32).transpose()).to(self.device)
-
-
-        attention = False
 
         stft_param = {"hop": self.hop, "wlen": self.wlen, "win": self.win, "len": T_orig}
 
@@ -293,18 +291,19 @@ class SpeechEnhancement:
 
             algo = GPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, attention = attention, verbose = self.verbose)
+                        num_E_step=self.num_E_step, verbose = self.verbose)
 
         elif algo_type == 'dpeem':
 
             algo = DPEEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, attention = attention, verbose = self.verbose)
+                        num_E_step=self.num_E_step, verbose = self.verbose)
+            
         elif algo_type == 'gdpeem':
 
             algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, attention = attention, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)
+                        num_E_step=self.num_E_step, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)
 
 
         else:
@@ -319,18 +318,20 @@ class SpeechEnhancement:
             algo_run_params = {"tqdm": tqdm}
         algo.run(params = algo_run_params)
 
-        #%% Save estimated sources
-        path0, mix_name = os.path.split(mix_file)
-        path01, _ = os.path.split(path0)
-        path1, speaker_id = os.path.split(path01)
-        path11, _ = os.path.split(path1)
-        path2, snr_level = os.path.split(path11)
-        _, noise_type = os.path.split(path2)
 
-        save_dir = os.path.join(self.output_dir, noise_type, str(snr_level), speaker_id)
+        if self.save_flg:
+            # Save estimated sources
+            path0, mix_name = os.path.split(mix_file)
+            path01, _ = os.path.split(path0)
+            path1, speaker_id = os.path.split(path01)
+            path11, _ = os.path.split(path1)
+            path2, snr_level = os.path.split(path11)
+            _, noise_type = os.path.split(path2)
+            save_dir = os.path.join(self.output_dir, noise_type, str(snr_level), speaker_id)
 
-        if not os.path.isdir(save_dir):
-            os.makedirs(save_dir)
+            if not os.path.isdir(save_dir):
+                os.makedirs(save_dir)
+            
         s_hat = librosa.istft(stft_matrix=algo.S_hat, hop_length=self.hop,
                               win_length=self.wlen, window=self.win, length=T_orig)
         n_hat = librosa.istft(stft_matrix=algo.N_hat, hop_length=self.hop,
@@ -385,8 +386,8 @@ class SpeechEnhancement:
             "spec_figure": spec_figure,
             "input_scores": input_scores,
             "output_scores": output_scores,
-            "S_hat_wave": s_hat,
-            "N_hat_wave": n_hat,
+            "enh_wave": s_hat,
+            "estnoise_wave": n_hat,
             "S_hat_spec": algo.S_hat,
             "noisy_wave": x,
             "noisy_spec": X,
