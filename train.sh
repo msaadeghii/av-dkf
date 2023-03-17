@@ -5,7 +5,7 @@ source ~/.bashrc
 
 nvidia-smi
 
-source activate se
+conda activate se
 
 # Run the training script
-python train_model.py ./configs/cfg_A_DKF.ini
+python train_model.py ./configs/cfg_AV_DKF.ini

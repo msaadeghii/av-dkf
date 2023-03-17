@@ -167,10 +167,10 @@ class SE_Eval():
     """
     
     def __init__(self, data_dir, demand_noise_dir, save_dir_eval,
-                device = 'cuda', nmf_rank = 8, num_iter = 10, num_E_step = 5, algo_type = "gdpeem"):
+                device = 'cuda', nmf_rank = 8, num_iter = 50, num_E_step = 10, algo_type = "gdpeem"):
         
         self.speech_dir = os.path.join(data_dir, 'val_data_NTCD')
-        self.speakers_id = ['06M', '17F', '20M', '35M', '38F', '42M', '52M', '59F']
+        self.speakers_id = ['17F', '20M', '35M', '38F', '42M', '52M', '59F']
         self.noise_types = ['NPARK',  'DWASHING',  'PSTATION', 'TMETRO', 'DKITCHEN']
         self.SNRs = [0,5,10] 
         self.demand_noise_dir = demand_noise_dir

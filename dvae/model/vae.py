@@ -793,8 +793,6 @@ class AV_CVAE(nn.Module):
         self.gen_logvar = nn.Linear(self.dense_z_x[-1], self.x_dim)
 
     def zprior(self, v):
-        # v = v.permute(0,4,2,3,1)
-        # v = v[None,None,:,:,:]
 
         v = self.prior_layerV(v)
         v = self.activation(v)
@@ -814,10 +812,6 @@ class AV_CVAE(nn.Module):
 
 
     def inference(self, x, v = 'NaN', amask = False):
-        # v = v.permute(0,4,2,3,1)
-        # v = v[None,None,:,:,:]
-        # v = self.vfeats(v)
-
 
         x = self.mlp_x_z(x)
         if amask:
@@ -850,14 +844,10 @@ class AV_CVAE(nn.Module):
 
         z = self.mlp_z_x(z)
 
-        # v = v.permute(0,4,2,3,1)
-        # v = v[None,None,:,:,:]
-        # v = self.vfeats(v)
-
         v = self.decoder_layerV(v)
         v = self.activation(v)
 
-        zv = torch.cat((z,v), 1)
+        zv = torch.cat((z,v), -1)
         zv = self.layer_mix_decoder(zv)
         zv = self.activation(zv)
 

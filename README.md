@@ -1,8 +1,6 @@
 # Audio-visual Deep Kalman Filter (AV-DKF)
 
-This repository contains the codes for the audio-visual speech enhancement (AVSE) framework based on Deep Kalman Filter (DKF), which is proposed in the following paper:
-
-> [1] A. Golmakani, M. Sadeghi, and R. Serizel, [Audio-visual Speech Enhancement with a Deep Kalman Filter Generative Model](https://arxiv.org/abs/2211.00988), in IEEE International Conference on Acoustics Speech and Signal Processing (ICASSP), June 2023.
+This repository contains the codes for the audio-visual speech enhancement (AVSE) framework based on Deep Kalman Filter (DKF) [1], as well as the fast & efficient speech enhancement method proposed in [2].
 
 We have used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to write these codes.
 
@@ -16,14 +14,26 @@ We have used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to wri
   - [Streamlit application](#streamlit-application)
   - [Useful resources](#useful-resources)
   - [Contacts](#contacts)
+  - [References](#references)
   
 ## Getting started
 
 To get started with the codes, you need to clone this repository:
 
 ```shell
+# Clone repository
 git clone https://github.com/msaadeghii/av-dkf.git
 cd av-dkf
+
+# Create & activate a virtual environment with conda, see https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html
+conda create --name avse python=3.8
+conda activate avse
+
+# Install PyTorch
+pip install torch==1.12.1+cu102 torchvision==0.13.1+cu102 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu102
+
+# Install OpenCV
+pip install opencv-python
 ```
 
 You will also need to install some required packages. Once you're done, you can `train` a model and then evaluate it by either `speech analysis-resynthesis` or `speech enhancement`. There are also some pre-trained models that you can use. To know different directories and main functions in this repository, please consult the following. 
@@ -58,6 +68,8 @@ The speech enhancement scripts are provided in `dvae/SE`. The script `Test_SE.py
 
 The working enhancement algorithms are `peem` & `gpeem` for non-dynamical VAE models, and `dpeem` & `gdpeem` for the dynamical VAE models. All these methods are based on finding the mode of the posterior distribution in the expectation step using the Adam optimizer. Here, "g" stands for the gradient-based gain update method proposed in our paper [1].
 
+> The speech enhancement algorithm proposed in [2], which is called Langevin Dynamics Expectation Maximization (LDEM), can be found inside `dvae/SE/SE_algorithms`. You can also try it in the demo notebook (see below).
+
 ## Speech enhancement demo
 
 The Jupyter notebook `SE_demo.ipynb` provides a simple demo of applying different VAE models with different enhancement algorithms to the sample data provided in `data`.
@@ -78,3 +90,9 @@ You can find some good resources on the DVAE models [here](https://dynamicalvae.
 
 - [Mostafa Sadeghi](https://msaadeghii.github.io/) (mostafa[dot]sadeghi[at]inria[dot]fr).
 - Ali Golmakani (golmakani77[at]yahoo[dot]com)
+
+## References
+
+[1] A. Golmakani, M. Sadeghi, and R. Serizel, [Audio-visual Speech Enhancement with a Deep Kalman Filter Generative Model](https://arxiv.org/abs/2211.00988), in IEEE International Conference on Acoustics Speech and Signal Processing (ICASSP), Rhodes island, June 2023.
+
+[2] M. Sadeghi and R. Serizel, [Fast and Efficient Speech Enhancement with Variational Autoencoders](https://arxiv.org/abs/2211.02728), in IEEE International Conference on Acoustics Speech and Signal Processing (ICASSP), Rhodes island, June 2023.

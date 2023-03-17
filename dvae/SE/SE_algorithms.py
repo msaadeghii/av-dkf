@@ -249,10 +249,16 @@ class EM:
                     pbar.set_postfix({'cost': cost[n]})
 
         elapsed = time.time() - t0
-
+        
         WFs, WFn = self.compute_WF(sample=True)
-        self.S_hat = WFs*self.X
-        self.N_hat = WFn*self.X
+
+        if WFs.ndim == 2:
+            self.S_hat = WFs*self.X
+            self.N_hat = WFn*self.X
+        else:
+            self.S_hat = np.mean(WFs, axis = 0) *self.X
+            self.N_hat = np.mean(WFn, axis = 0) *self.X 
+
         if self.verbose:
             print("elapsed time: %.4f s" % (elapsed))
 
@@ -545,6 +551,116 @@ class PEEM(EM):
 
         return WFs, WFn
 
+# Implementation of the speech enhancement algorithm proposed in the following paper:
+# [*] M. Sadeghi and R. Serizel, Fast and Efficient Speech Enhancement with Variational Autoencoders,
+#     in IEEE International Conference on Acoustics Speech and Signal Processing (ICASSP), Rhodes island, June 2023. 
+# The Langevin Dynamics (LD) part of the code is adapted from https://www.lyndonduong.com/sgmcmc/
+
+class LDEM(EM):
+    
+    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-2, 
+                 num_E_step=10, eta = 0.01, tv_param = 5, num_samples = 5, verbose = False):
+        
+        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter, device=device)
+                
+        self.verbose = verbose
+        self.eta = eta # noise variance for the proposal distribution
+        self.num_samples = num_samples
+        self.tv_param = tv_param
+        # mixture power spectrogram as tensor, shape (F, N)
+        self.X_abs_2_t = self.np2tensor(self.X_abs_2).to(self.device) 
+
+        # intial value for the latent variables
+        self.Z = Z 
+        self.Z_t = self.np2tensor(self.Z[None,:,:] + np.sqrt(self.eta) * np.random.randn(self.num_samples, Z.shape[0], Z.shape[1]) ).to(self.device)
+        self.lr = lr
+        
+        # optimizer for the E-step     
+        self.optimizer = optim.SGD([self.Z_t.requires_grad_()], lr=1., momentum=0.)  # momentum is set to zero
+        
+        # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
+        self.num_E_step = num_E_step 
+        
+        self.vae.eval() # vae in eval mode
+         
+        self.zmean, self.zlogvar, _ = self.vae.zprior(self.Vf)
+        self.zmean, self.zlogvar = self.zmean.detach().t().to(self.device), self.zlogvar.detach().t().to(self.device) 
+                
+    def _noise(self, params): 
+        """We are adding param+noise to each param."""
+        std = np.sqrt(2 * self.lr)
+        loss = 0.
+        for param in params:
+            noise = torch.randn_like(param) * std
+            loss += (noise * param).sum()
+        return loss
+    
+    def compute_Vs(self, Z):
+        """ Z: tensor of shape (N, L) """
+
+        v_ = self.Vf[None,:,:].repeat(Z.shape[0],1,1)
+        Vs_t= self.vae.generation_x(torch.transpose(Z, 1, 2), v_) # (F, N)
+        Vs_t = torch.transpose(Vs_t, 1, 2)
+        self.Vs = self.tensor2np(Vs_t.detach())
+        
+        return Vs_t
+
+    def total_variation_loss(self, Z):      
+        tv = (torch.abs(Z[:,:,1:] - Z[:,:,:-1]).pow(1)).sum()
+        return tv
+    
+    def E_step(self):
+        """ """
+        # vector of gain parameters as tensor, shape (, N)
+        g_t = self.np2tensor(self.g).to(self.device)[None, :]
+        
+        # noise variances as tensor, shape (F, N)
+        Vb_t = self.np2tensor(self.Vb).to(self.device)[None, :, :]
+        
+        def LD():
+            # reset gradients
+            self.optimizer.zero_grad()
+            # compute speech variance
+            Vs_t = self.compute_Vs(self.Z_t)
+            # compute likelihood variance
+            Vx_t = g_t*Vs_t + Vb_t
+            # compute loss, do backward and update latent variables
+            loss = ( torch.sum(self.X_abs_2_t/Vx_t + torch.log(Vx_t)) + 
+                    torch.sum((self.Z_t-self.zmean).pow(2)/self.zlogvar.exp()) + self.tv_param * self.total_variation_loss(self.Z_t) )  * self.lr
+
+            loss += self._noise(self.Z_t)  # add noise*param before calling backward!
+            loss.backward()
+            self.optimizer.step()
+            
+            return loss
+        
+        # Some optimization algorithms such as Conjugate Gradient and LBFGS  
+        # need to reevaluate the function multiple times, so we have to pass 
+        # in a closure that allows them to recompute our model. The closure  
+        # should clear the gradients, compute the loss, and return it.
+        for epoch in np.arange(self.num_E_step):
+            LD()  
+
+        self.Z_t.data += torch.sqrt(torch.tensor([self.eta]).to(self.device)) * torch.randn_like(self.Z_t) 
+        
+        # update numpy array from the new tensor
+        self.Z = self.tensor2np(self.Z_t.detach())
+        
+        # compute variances
+        self.compute_Vs(self.Z_t)
+        self.compute_Vs_scaled()
+        self.compute_Vx()
+        
+    def compute_WF(self, sample=False):
+        # sample parameter useless
+        
+        # compute Wiener Filters
+        WFs = self.Vs_scaled/self.Vx
+        WFn = self.Vb/self.Vx
+        
+        return WFs, WFn
+
+    
 #%%
 
 class DPEEM(DEM):

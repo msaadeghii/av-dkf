@@ -37,7 +37,7 @@ sys.path.append('dvae/model')
 sys.path.append('dvae/utils')
 sys.path.append('dvae/SE')
 import os
-from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM
+from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM, LDEM
 from vae import build_VAE
 from dkf import build_DKF
 from read_config import myconf
@@ -287,6 +287,12 @@ class SpeechEnhancement:
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
                         num_E_step=self.num_E_step, verbose = self.verbose)
 
+        elif algo_type == 'ldem':
+
+            algo = LDEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, verbose = self.verbose)
+            
         elif algo_type == 'gpeem':
 
             algo = GPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
@@ -303,9 +309,8 @@ class SpeechEnhancement:
 
             algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)
-
-
+                        num_E_step=self.num_E_step, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)                     
+            
         else:
 
             raise NameError('Unknown algorithm')
@@ -319,19 +324,6 @@ class SpeechEnhancement:
         algo.run(params = algo_run_params)
 
 
-        if self.save_flg:
-            # Save estimated sources
-            path0, mix_name = os.path.split(mix_file)
-            path01, _ = os.path.split(path0)
-            path1, speaker_id = os.path.split(path01)
-            path11, _ = os.path.split(path1)
-            path2, snr_level = os.path.split(path11)
-            _, noise_type = os.path.split(path2)
-            save_dir = os.path.join(self.output_dir, noise_type, str(snr_level), speaker_id)
-
-            if not os.path.isdir(save_dir):
-                os.makedirs(save_dir)
-            
         s_hat = librosa.istft(stft_matrix=algo.S_hat, hop_length=self.hop,
                               win_length=self.wlen, window=self.win, length=T_orig)
         n_hat = librosa.istft(stft_matrix=algo.N_hat, hop_length=self.hop,
@@ -343,6 +335,16 @@ class SpeechEnhancement:
         output_scores = []
         
         if self.compute_scores:
+            path0, mix_name = os.path.split(mix_file)
+            path01, _ = os.path.split(path0)
+            path1, speaker_id = os.path.split(path01)
+            path11, _ = os.path.split(path1)
+            path2, snr_level = os.path.split(path11)
+            _, noise_type = os.path.split(path2)
+            save_dir = os.path.join(self.output_dir, noise_type, str(snr_level), speaker_id)
+
+            os.makedirs(save_dir, exist_ok=True)
+            
             metrics_dict = get_metrics(mix = x, clean = s_orig, estimate = s_hat, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
             input_scores = [metrics_dict['input_si_sdr'], metrics_dict['input_pesq'], metrics_dict['input_stoi']]
             info = {"input_scores": input_scores}
