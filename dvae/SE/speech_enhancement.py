@@ -37,12 +37,11 @@ sys.path.append('dvae/model')
 sys.path.append('dvae/utils')
 sys.path.append('dvae/SE')
 import os
-from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM, LDEM
+from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM, LDEM, LDGDPEEM, LDDPEEM
 from vae import build_VAE
 from dkf import build_DKF
 from read_config import myconf
 import matplotlib.pyplot as plt
-import cv2
 
 from lipreading.utils import load_json, save2npz
 from lipreading.utils import showLR, calculateNorm2, AverageMeter
@@ -68,7 +67,7 @@ class SpeechEnhancement:
         self.model_path: str = se_params.get('model_path', None)
         self.save_flg: bool = se_params.get('save_flg', False)
         self.device: str = se_params.get('device', 'cpu')
-        self.output_dir: str = se_params.get('output_dir', None)
+        self.save_dir: str = se_params.get('save_dir', None)
         self.test_se: bool = se_params.get('test_se', False)
         self.compute_scores: bool = se_params.get('compute_scores', False)
         self.verbose: bool = se_params.get('verbose', False)
@@ -185,7 +184,7 @@ class SpeechEnhancement:
         return spec_figure
 
 
-    def run(self, input_files, tqdm=None, experience_name = None, compute_trace=False):
+    def run(self, input_args, tqdm=None, experience_name = None, compute_trace=False):
 
         if experience_name is None:
             self.experience_name = self.vae_mode
@@ -194,16 +193,27 @@ class SpeechEnhancement:
 
         #%% Load input signals and compute STFT
 
-        mix_file, speech_file, video_file, algo_type = input_files
-
+        input_files = input_args[0]
+        algo_type = input_args[1]
+        
+        mix_file, speech_file, video_file = input_files['mix_file'], input_files['speech_file'], input_files['video_file']
+        
         if isinstance(mix_file, str):
             s_orig, fs = sf.read(speech_file) # clean speech
             x, fx = sf.read(mix_file)    # mixture speech
             v_orig = np.load(video_file)  # video
         else:
-            x, s_orig, v_orig, algo_type = input_files
+            x, s_orig, v_orig = input_files
             fs = 16000
 
+        file_info = {}
+        
+        if 'snr' in input_files:
+            file_info['snr'] = input_files['snr']
+            file_info['speaker_id'] = input_files['speaker_id']
+            file_info['noise_type'] = input_files['noise_type']
+            file_info['file_name'] = input_files['file_name']
+            
         s_orig = s_orig/np.max(s_orig)
         x = x/np.max(x)
 
@@ -244,7 +254,6 @@ class SpeechEnhancement:
             fps = 30
 
             v_trimmed = v_orig
-            data_v_to_save = v_orig.copy().transpose().reshape((-1,1,67,67,1))
 
             data_v = resample(v_trimmed, target_num = N_aframes)
             data_v = data_v.transpose().reshape((-1,1,67,67,1))
@@ -303,13 +312,25 @@ class SpeechEnhancement:
 
             algo = DPEEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, verbose = self.verbose)
+                        num_E_step=self.num_E_step, fix_gain = True, verbose = self.verbose)
+
+        elif algo_type == 'lddpeem':
+
+            algo = LDDPEEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, fix_gain = True, verbose = self.verbose)
             
         elif algo_type == 'gdpeem':
 
             algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, verbose = self.verbose, alpha = 0.0, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)                     
+                        num_E_step=self.num_E_step, verbose = self.verbose, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)                     
+
+        elif algo_type == 'ldgdpeem':
+
+            algo = LDGDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
+                        device=self.device, num_iter=self.num_iter, lr=self.lr,
+                        num_E_step=self.num_E_step, verbose = self.verbose, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9) 
             
         else:
 
@@ -335,15 +356,6 @@ class SpeechEnhancement:
         output_scores = []
         
         if self.compute_scores:
-            path0, mix_name = os.path.split(mix_file)
-            path01, _ = os.path.split(path0)
-            path1, speaker_id = os.path.split(path01)
-            path11, _ = os.path.split(path1)
-            path2, snr_level = os.path.split(path11)
-            _, noise_type = os.path.split(path2)
-            save_dir = os.path.join(self.output_dir, noise_type, str(snr_level), speaker_id)
-
-            os.makedirs(save_dir, exist_ok=True)
             
             metrics_dict = get_metrics(mix = x, clean = s_orig, estimate = s_hat, sample_rate=fs, metrics_list=['si_sdr', 'stoi', 'pesq'])
             input_scores = [metrics_dict['input_si_sdr'], metrics_dict['input_pesq'], metrics_dict['input_stoi']]
@@ -351,49 +363,26 @@ class SpeechEnhancement:
             list_score = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi'], info]
             output_scores = [metrics_dict['si_sdr'], metrics_dict['pesq'], metrics_dict['stoi']]
             info = {"output_scores": output_scores}
-            list_sample = {"speaker_id": speaker_id,
-                                 "noise_type": noise_type,
-                                 "SNR": snr_level,
-                                 "mix_file": mix_file,
-                                 "speech_file": speech_file,
-                                 "video_file": video_file}
-
-            if self.save_flg:
-                np.savez(os.path.join(save_dir, noise_type + '_' + str(snr_level) + '_' + speaker_id + '_' + mix_name[:-4]+'.npz'), list_score = list_score, list_sample = list_sample,
-                        input_scores = input_scores)
 
         spec_figure = None
-        
-        if self.save_flg:
-            path_s_hat = os.path.join(save_dir, mix_name[:-4]+f'_speech_est_{algo_type}_{self.experience_name}' +'.wav')
-            path_n_hat = os.path.join(save_dir,mix_name[:-4]+f'_noise_est_{algo_type}_{self.experience_name}' +'.wav')
-            path_mix = os.path.join(save_dir,mix_name[:-4]+'_mix_norm.wav')
-            
-            out_path = os.path.join(save_dir,mix_name[:-4]+'_video.avi')
-            out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'DIVX'), fps,(67,67))
-            for idx in tqdm(range(data_v_to_save.shape[0])):
-                frame = cv2.cvtColor(np.uint8(data_v_to_save[idx, 0, :, :, 0].transpose()*255),cv2.COLOR_GRAY2BGR)
-                out.write(frame)
-            out.release()
-            cv2.destroyAllWindows()
-
-            sf.write(path_s_hat, s_hat, self.fs)
-            sf.write(path_n_hat, n_hat, self.fs)
-            sf.write(path_mix, x, self.fs)
 
         if self.demo:
             spec_figure = self.get_specs(x, s_orig, n_hat, s_hat)
+            
+        if self.save_flg and 'snr' in input_files:
+            
+            path_s_hat = os.path.join(self.save_dir, f"{input_files['speaker_id']}_{input_files['noise_type']}_{input_files['snr']}_{input_files['file_name']}.wav")
+            
+            sf.write(path_s_hat, s_hat, self.fs)
 
         info = {
-            "spec_figure": spec_figure,
             "input_scores": input_scores,
             "output_scores": output_scores,
             "enh_wave": s_hat,
             "estnoise_wave": n_hat,
-            "S_hat_spec": algo.S_hat,
             "noisy_wave": x,
-            "noisy_spec": X,
             "clean_wave": s_orig,
-            "clean_spec": s_stft
+            "file_info":file_info
         }
+        
         return info

@@ -18,7 +18,7 @@ We have used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to wri
   
 ## Getting started
 
-To get started with the codes, you need to clone this repository:
+To get started with the codes, you need to clone this repository and install required libraries:
 
 ```shell
 # Clone repository
@@ -36,7 +36,7 @@ pip install torch==1.12.1+cu102 torchvision==0.13.1+cu102 torchaudio==0.12.1 --e
 pip install opencv-python
 ```
 
-You will also need to install some required packages. Once you're done, you can `train` a model and then evaluate it by either `speech analysis-resynthesis` or `speech enhancement`. There are also some pre-trained models that you can use. To know different directories and main functions in this repository, please consult the following. 
+You may also need to install some additional packages. There are some pre-trained models that you can use. To know different directories and main functions in this repository, please consult the following. 
 
 You can monitor model training using [Comet ML](https://www.comet.com/). To set up an account and get your Comet ML `API key`, follow the instructions provided [here](https://www.comet.com/docs/v2/guides/getting-started/quickstart/). Once you get your API key, insert it in the config files loated in `configs`.
 

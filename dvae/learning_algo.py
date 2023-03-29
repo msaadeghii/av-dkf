@@ -251,7 +251,8 @@ class SE_Eval():
         mix_wav = speech_wav + noise_wav
         
         # Run SE & evaluations
-        info = self.se.run([mix_wav, speech_wav, video_raw, self.algo_type])
+        input_files = {'mix_file':mix_wav, 'speech_file':speech_wav, 'video_file':video_raw}
+        info = self.se.run(input_files, self.algo_type)
         
         return info
         
