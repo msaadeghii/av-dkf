@@ -18,7 +18,7 @@ We have used the [DVAE repository](https://github.com/XiaoyuBIE1994/DVAE) to wri
   
 ## Getting started
 
-To get started with the codes, you need to clone this repository and install required libraries:
+To get started with the codes, you need to clone this repository, and install required libraries:
 
 ```shell
 # Clone repository
