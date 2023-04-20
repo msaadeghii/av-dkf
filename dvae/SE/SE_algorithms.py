@@ -26,6 +26,8 @@ sys.path.append("../utils")
 sys.path.append("../model")
 sys.path.append("../..")
 
+from custom_optimizer import SGLD, pSGLD
+
 my_seed = 0
 import numpy as np
 np.random.seed(my_seed)
@@ -568,7 +570,7 @@ class LDEM(EM):
         self.num_samples = num_samples
         self.tv_param = tv_param
         # mixture power spectrogram as tensor, shape (F, N)
-        self.X_abs_2_t = self.np2tensor(self.X_abs_2).to(self.device) 
+        self.X_abs_2_t = self.np2tensor(self.X_abs_2).to(self.device)[None,:,:] 
 
         # intial value for the latent variables
         self.Z = Z 
@@ -582,10 +584,11 @@ class LDEM(EM):
         self.num_E_step = num_E_step 
         
         self.vae.eval() # vae in eval mode
-         
-        self.zmean, self.zlogvar, _ = self.vae.zprior(self.Vf)
+        self.zmean, self.zlogvar, z_id = self.vae.zprior(self.Vf)
         self.zmean, self.zlogvar = self.zmean.detach().t().to(self.device), self.zlogvar.detach().t().to(self.device) 
-                
+        if torch.all(z_id == -1):
+            self.zmean = self.zlogvar = torch.zeros_like(self.Z_t)
+            
     def _noise(self, params): 
         """We are adding param+noise to each param."""
         std = np.sqrt(2 * self.lr)
@@ -678,7 +681,7 @@ class DPEEM(DEM):
         self.z_dim = Z.shape[0]
         # optimizer for the E-step
         self.optimizer = optim.Adam([self.Z_t.requires_grad_()], lr=self.lr)
-
+        
         # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
         self.num_E_step = num_E_step
 
@@ -698,7 +701,7 @@ class DPEEM(DEM):
         """ """
         # vector of gain parameters as tensor, shape (, N)
         g_t = self.np2tensor(self.g).to(self.device)[None,None,:]
-
+        
         # noise variances as tensor, shape (F, 1, N)
         Vb_t = self.np2tensor(self.Vb).to(self.device)[:,None,:]
 
@@ -747,9 +750,9 @@ class DPEEM(DEM):
 
         return WFs, WFn
 
-#%% Langevin Dynamics Dynamical PEEM, i.e., the LD for the DKF generative model.
+#%% Dynamical Langevin Dynamics EM, i.e., the LD for the DKF generative model.
 
-class LDDPEEM(DEM):
+class DLDEM(DEM):
 
     def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3,
                  num_E_step=1, fix_gain = True, verbose = False):
@@ -757,8 +760,8 @@ class LDDPEEM(DEM):
         super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter, fix_gain = True,
              device=device)
 
+        self.lr = lr
         self.verbose = verbose
-        self.lr = 1e-4
         # mixture power spectrogram as tensor, shape (F, N)
         self.X_abs_2_t = self.np2tensor(self.X_abs_2)[:,None,:].to(self.device)
 
@@ -767,22 +770,13 @@ class LDDPEEM(DEM):
         self.Z_t = self.np2tensor(self.Z).to(self.device)
         self.z_dim = Z.shape[0]
         # optimizer for the E-step
-        self.optimizer = optim.SGD([self.Z_t.requires_grad_()], lr=1., momentum=0.)  # momentum is set to zero
-
+        self.optimizer = pSGLD([self.Z_t.requires_grad_()], lr=self.lr)
+        
         # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
         self.num_E_step = num_E_step
 
         self.vae.eval() # vae in eval mode
         
-    def _noise(self, params): 
-        """We are adding param+noise to each param."""
-        std = np.sqrt(2 * self.lr)
-        loss = 0.
-        for param in params:
-            noise = torch.randn_like(param) * std
-            loss += (noise * param).sum()
-        return loss
-    
     def compute_Vs(self, Z):
         """ Z: tensor of shape (N, L) """
 
@@ -797,12 +791,12 @@ class LDDPEEM(DEM):
         """ """
         # vector of gain parameters as tensor, shape (, N)
         g_t = self.np2tensor(self.g).to(self.device)[None,None,:]
-
+        
         # noise variances as tensor, shape (F, 1, N)
         Vb_t = self.np2tensor(self.Vb).to(self.device)[:,None,:]
 
 
-        def LD():
+        def closure():
             # reset gradients
             self.optimizer.zero_grad()
             # compute speech variance
@@ -818,17 +812,17 @@ class LDDPEEM(DEM):
             # compute loss, do backward and update latent variables
 
             loss = ( torch.sum(self.X_abs_2_t/Vx_t + torch.log(Vx_t)) +
-                    torch.sum((self.Z_t-z_mean_p).pow(2)/z_logvar_p.exp()) )  * self.lr
-            
-            loss += self._noise(self.Z_t)  # add noise*param before calling backward!
+                    torch.sum((self.Z_t-z_mean_p).pow(2)/z_logvar_p.exp()) )
             loss.backward()
-            self.optimizer.step()
-            
             return loss
-        
+
+        # Some optimization algorithms such as Conjugate Gradient and LBFGS
+        # need to reevaluate the function multiple times, so we have to pass
+        # in a closure that allows them to recompute our model. The closure
+        # should clear the gradients, compute the loss, and return it.
         for epoch in np.arange(self.num_E_step):
-            LD()
-        
+            self.optimizer.step(closure)
+
         # update numpy array from the new tensor
         self.Z = self.tensor2np(self.Z_t.detach())
 
@@ -938,8 +932,8 @@ class GPEEM(EM):
 
 class GDPEEM(DEM):
 
-    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3, visual = None, is_z_oracle = False, is_noise_oracle = False, fix_gain = False,
-                 num_E_step=1, verbose = False, Z_oracle = None, rec_power = 0.99):
+    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-3, visual = None, fix_gain = False,
+                 num_E_step=1, verbose = False, rec_power = 0.99):
 
         super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
              device=device, fix_gain = True)
@@ -952,9 +946,6 @@ class GDPEEM(DEM):
         self.g_t = self.np2tensor(self.g).to(self.device)[None,None,:]
         self.Z = Z # shape (L, 1, N)
         self.Z_t = self.np2tensor(self.Z).to(self.device)
-        if Z_oracle is not None:
-            self.Z_oracle = Z_oracle # shape (L, N)
-            self.Z_oracle_t = self.np2tensor(self.Z_oracle).to(self.device)
 
         self.visual = visual
 
@@ -967,8 +958,6 @@ class GDPEEM(DEM):
 
         self.vae.eval() # vae in eval mode
 
-        self.is_z_oracle = is_z_oracle
-        self.is_noise_oracle = is_noise_oracle
         self.a = 1.1
         self.b = 1.1
 
@@ -1046,134 +1035,6 @@ class GDPEEM(DEM):
 
         self.g_t.data = torch.clip(self.g_t, min = 0.001)
         self.g = self.tensor2np(self.g_t.detach())
-
-    def compute_WF(self, sample=False):
-
-        # compute Wiener Filters
-        self.Vx_transpose = np.transpose(self.Vx, (1,0,-1))
-        WFs = (self.Vs_scaled/self.Vx_transpose).squeeze()
-        WFn = (self.Vb[:,None,:]/self.Vx_transpose).squeeze()
-
-        return WFs, WFn
-
-
-#%% Langevin Dynamics GDPEEM.
-
-class LDGDPEEM(DEM):
-
-    def __init__(self, X, Vf, W, H, g, Z, vae, num_iter, device, lr=1e-2, visual = None, is_z_oracle = False, is_noise_oracle = False, fix_gain = True,
-                 num_E_step=1, verbose = False, Z_oracle = None, rec_power = 0.99):
-
-        super().__init__(X=X, Vf = Vf, W=W, H=H, g=g, vae=vae, num_iter=num_iter,
-             device=device, fix_gain = True)
-
-        self.verbose = verbose
-        # mixture power spectrogram as tensor, shape (F, N)
-        self.X_abs_2_t = self.np2tensor(self.X_abs_2)[:,None,:].to(self.device)
-
-        self.lr = 5e-4
-        # intial value for the latent variables
-        self.g_t = self.np2tensor(self.g).to(self.device)[None,None,:]
-        self.Z = Z # shape (L, 1, N)
-        self.Z_t = self.np2tensor(self.Z).to(self.device)
-        if Z_oracle is not None:
-            self.Z_oracle = Z_oracle # shape (L, N)
-            self.Z_oracle_t = self.np2tensor(self.Z_oracle).to(self.device)
-
-        self.visual = visual
-
-        self.z_dim = Z.shape[0]
-        # optimizer for the E-step
-        self.optimizer = optim.SGD([self.Z_t.requires_grad_()]+ [self.g_t.requires_grad_()], lr=1., momentum=0.)  # momentum is set to zero  
-        
-        # VERY IMPORTANT PARAMETERS: If 1, bad results in the FFNN VAE case
-        self.num_E_step = num_E_step
-
-        self.vae.eval() # vae in eval mode
-
-        self.is_z_oracle = is_z_oracle
-        self.is_noise_oracle = is_noise_oracle
-        self.a = 1.1
-        self.b = 1.1
-
-        self.rec_power = 0.5 
-        
-    def _noise(self, params): 
-        """We are adding param+noise to each param."""
-        std = np.sqrt(2 * self.lr)
-        loss = 0.
-        for param in params:
-            noise = torch.randn_like(param) * std
-            loss += (noise * param).sum()
-        return loss
-    
-    def compute_Vs(self, Z):
-        """ Z: tensor of shape (N, L) """
-
-        Vs_t= self.vae.generation_x(Z.permute(-1,1,0), self.visual).permute(-1,1,0) # (F, 1 ,N)
-
-        self.Vs_t = Vs_t.clone().detach()
-        self.Vs = self.tensor2np(Vs_t.detach())
-
-        return Vs_t
-
-
-    def E_step(self):
-        """ """
-
-        # noise variances as tensor, shape (F, 1, N)
-        Vb_t = self.np2tensor(self.Vb).to(self.device)[:,None,:]
-
-        self.g_t.data = torch.clip(self.g_t, min = 0.001)
-
-        def LD():
-            # reset gradients
-            self.optimizer.zero_grad()
-            # compute speech variance
-            Vs_t = self.compute_Vs(self.Z_t)
-
-
-            # compute likelihood variance
-            Vx_t = self.g_t*Vs_t + Vb_t
-            # compute prior params
-            z_0 = torch.zeros(self.z_dim,1,1).to(self.device)
-            z_tm1 = torch.cat([z_0, self.Z_t[:,:,:-1]], -1) # (L,1,F)
-
-            _, self.z_mean_p, self.z_logvar_p = self.vae.generation_z(z_tm1.permute(-1,1,0), self.visual)
-            self.z_mean_p = self.z_mean_p.permute(-1,1,0)
-            self.z_logvar_p = self.z_logvar_p.permute(-1,1,0)
-
-
-            # compute loss, do backward and update latent variables
-            loss = ( (self.rec_power)*torch.mean(self.X_abs_2_t/Vx_t + torch.log(Vx_t)) +
-                   torch.mean(self.b*(self.g_t) - (self.a-1)*torch.log((self.g_t))) +
-                    (1-self.rec_power)*torch.mean((self.Z_t-self.z_mean_p).pow(2)/self.z_logvar_p.exp())
-                   ) * self.lr
-
-            loss += self._noise([self.Z_t] + [self.g_t])  # add noise*param before calling backward!
-            loss.backward()
-            self.optimizer.step()
-            
-            return loss
-
-        pbar = np.arange(self.num_E_step)
-        for epoch in pbar:
-            loss_ = LD()
-
-        self.g_t.data = torch.clip(self.g_t, min = 0.001)
-        self.g = self.tensor2np(self.g_t.detach())
-        
-        # update numpy array from the new tensor
-        self.Z = self.tensor2np(self.Z_t.detach())
-        
-        # compute variances
-        self.compute_Vs(self.Z_t)
-        self.compute_Vs_scaled()
-        self.compute_Vx()
-
-        WFs, WFn = self.compute_WF(sample=True)
-        self.S_hat = WFs*self.X
-        last_s_hat = self.npc2tensor(self.S_hat.transpose()).unsqueeze(1).to(self.device)
 
     def compute_WF(self, sample=False):
 

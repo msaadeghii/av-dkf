@@ -183,14 +183,12 @@ class A_VAE(nn.Module):
 
 
     def zprior(self, v):
-        #v = v.permute(1,2,0)
-        #v = v[None,None,:,:,:]
 
         mean = torch.zeros(v.shape[0], self.z_dim)
         logvar = torch.zeros(v.shape[0], self.z_dim)
         z = torch.zeros(v.shape[0], self.z_dim)
 
-        return mean, logvar, z
+        return mean, logvar, -1*torch.ones_like(z)
 
     def reparameterization(self, mean, logvar):
 
@@ -565,7 +563,6 @@ class AV_VAE(nn.Module):
 
     def zprior(self, v):
         v = v.permute(0,4,2,3,1)
-        # v = v[None,None,:,:,:]
         v = self.vfeats(v)
         mean = self.zprior_mean_layer(v)
         logvar = self.zprior_logvar_layer(v)

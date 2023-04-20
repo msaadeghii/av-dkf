@@ -37,7 +37,7 @@ sys.path.append('dvae/model')
 sys.path.append('dvae/utils')
 sys.path.append('dvae/SE')
 import os
-from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM, LDEM, LDGDPEEM, LDDPEEM
+from SE_algorithms import PEEM, DPEEM, GDPEEM, GPEEM, LDEM, DLDEM
 from vae import build_VAE
 from dkf import build_DKF
 from read_config import myconf
@@ -262,7 +262,7 @@ class SpeechEnhancement:
             data_v = torch.from_numpy(data_v).permute(1,-1,0,2,3).to(self.device).type(this_dtype)
             v = self.vfeats(data_v, lengths=None)[0,...].detach().cpu().numpy()
             data_orig_v = torch.from_numpy(v.astype(np.float32).transpose()).to(self.device)
-
+            
         stft_param = {"hop": self.hop, "wlen": self.wlen, "win": self.win, "len": T_orig}
 
 
@@ -314,27 +314,21 @@ class SpeechEnhancement:
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
                         num_E_step=self.num_E_step, fix_gain = True, verbose = self.verbose)
 
-        elif algo_type == 'lddpeem':
+        elif algo_type == 'dldem':
 
-            algo = LDDPEEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
+            algo = DLDEM(X=X, Vf = v.T, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae,
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, fix_gain = True, verbose = self.verbose)
+                        num_E_step=self.num_E_step, fix_gain = False, verbose = self.verbose)
             
         elif algo_type == 'gdpeem':
 
             algo = GDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
                         device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, verbose = self.verbose, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9)                     
-
-        elif algo_type == 'ldgdpeem':
-
-            algo = LDGDPEEM(X=X, Vf = v, W=W_init, H=H_init, g=g_init, Z=Z_init, vae=self.vae, visual = data_orig_v.unsqueeze(0).permute(-1,0,1),
-                        device=self.device, num_iter=self.num_iter, lr=self.lr,
-                        num_E_step=self.num_E_step, verbose = self.verbose, Z_oracle = Z_init, is_z_oracle = False, is_noise_oracle = False, fix_gain = True, rec_power = 0.9) 
+                        num_E_step=self.num_E_step, verbose = self.verbose, fix_gain = True, rec_power = 0.9)   
             
         else:
-
-            raise NameError('Unknown algorithm')
+            
+            raise NameError('Unknown SE algorithm')
 
         #%% Run speech enhancement algorithm
         if compute_trace:
